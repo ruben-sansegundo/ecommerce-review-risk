@@ -1,0 +1,4 @@
+# The project is developed and run on Linux. Normalise to LF in the repository
+# and in every working tree, so an editor or script running on Windows cannot
+# introduce CRLF silently.
+* text=auto eol=lf

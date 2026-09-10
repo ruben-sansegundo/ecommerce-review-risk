@@ -1,0 +1,36 @@
+# Credentials — never commit
+.env
+kaggle.json
+.kaggle/
+
+# Data — downloaded via `make data`, never committed (see README).
+# Contents are excluded rather than the directories themselves: git does not
+# descend into an excluded directory, so a `!data/raw/.gitkeep` rule under a
+# `data/*` rule would never be reached. See gitignore(5).
+data/**
+!data/**/
+!data/**/.gitkeep
+!data/manifest.json
+
+# Trained models — reproducible artifacts, rebuilt with `make train`
+models/*
+!models/.gitkeep
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+
+# Tooling caches
+.ruff_cache/
+.pytest_cache/
+.ipynb_checkpoints/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
