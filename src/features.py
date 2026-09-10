@@ -90,6 +90,8 @@ def build_spine(
         }
     ).reset_index(drop=True)
 
+    spine["split"] = temporal_split(spine["order_purchase_timestamp"])
+
     # A duplicated key here would mean a merge fanned out - silent, and fatal to
     # every count downstream.
     if spine["order_id"].duplicated().any():
@@ -97,6 +99,60 @@ def build_spine(
 
     spine.attrs["funnel"] = funnel
     return spine
+
+
+def temporal_split(purchase: pd.Series) -> pd.Series:
+    """Label each order train / val / test by its purchase date.
+
+    Cut by date, never at random: rule 1 of CLAUDE.md. The split runs on the
+    purchase timestamp rather than on t0 or t1 so that both decision moments
+    land in exactly the same blocks - otherwise the two models would be judged
+    on drifting populations and the comparison would stop measuring the value
+    of the extra signal. See docs/decisiones.md, D-08.
+
+    The result is an *ordered* categorical, so groupby and plots keep the blocks
+    in chronological order instead of alphabetising them into test, train, val.
+    """
+    labels = pd.Series("train", index=purchase.index, dtype=object)
+    labels[purchase >= config.VAL_START] = "val"
+    labels[purchase >= config.TEST_START] = "test"
+    return pd.Series(
+        pd.Categorical(labels, categories=config.SPLIT_ORDER, ordered=True),
+        index=purchase.index,
+        name="split",
+    )
+
+
+def monthly_target_summary(spine: pd.DataFrame) -> pd.DataFrame:
+    """Orders, positives and prevalence per calendar month.
+
+    Deliberately free of anything post-decision: this module never touches
+    order_delivered_customer_date, not even to explain the past. The delivery
+    diagnosis lives in notebooks/01_eda.ipynb, where the caveat sits next to it.
+    """
+    month = spine["order_purchase_timestamp"].dt.to_period("M")
+    summary = spine.groupby(month, observed=True).agg(
+        orders=("y", "size"), positives=("y", "sum"), prevalence=("y", "mean")
+    )
+    summary.index.name = "month"
+    return summary
+
+
+def split_summary(spine: pd.DataFrame) -> pd.DataFrame:
+    """Size, positives and prevalence per block - reported next to every metric.
+
+    Prevalence drifts across the blocks because it tracks the delivery-delay
+    rate, so the test figure is the one any test metric must be read against.
+    """
+    summary = spine.groupby("split", observed=True).agg(
+        months=("order_purchase_timestamp", lambda c: c.dt.to_period("M").nunique()),
+        orders=("y", "size"),
+        positives=("y", "sum"),
+        prevalence=("y", "mean"),
+        first=("order_purchase_timestamp", "min"),
+        last=("order_purchase_timestamp", "max"),
+    )
+    return summary
 
 
 def write_spine() -> Path:
@@ -116,6 +172,15 @@ def write_spine() -> Path:
     print()
     print(f"  {'prevalence (y = score <= 2)':30s} {spine['y'].mean():>8.2%}")
     print(f"  {'t1 clamped to t0':30s} {spine['t1_was_inverted'].sum():>8,}")
+
+    print("\ntemporal split")
+    summary = split_summary(spine)
+    for block, row in summary.iterrows():
+        print(
+            f"  {block:6s} {row['months']:>2} months  {row['orders']:>7,} orders  "
+            f"{row['positives']:>6,} positives  {row['prevalence']:>6.2%}  "
+            f"{row['first']:%Y-%m} .. {row['last']:%Y-%m}"
+        )
     print(f"\nwrote {SPINE_PATH.relative_to(config.ROOT)}")
     return SPINE_PATH
 

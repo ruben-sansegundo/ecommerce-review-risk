@@ -7,7 +7,8 @@ of these tests touch data/raw - they check the rules, not the dataset.
 import pandas as pd
 import pytest
 
-from src.features import build_spine, first_review_per_order
+from src import config
+from src.features import build_spine, first_review_per_order, temporal_split
 
 ORDER_DATES = ["order_purchase_timestamp", "order_approved_at", "order_delivered_carrier_date"]
 
@@ -158,6 +159,7 @@ def test_the_spine_carries_no_post_decision_column():
         "review_creation_date",
         "review_score",
         "y",
+        "split",
     }
 
 
@@ -188,4 +190,64 @@ def test_the_funnel_reports_every_exclusion_step():
         "reached t0 and t1": 2,  # o2 never shipped
         "with a review": 2,
         "inside the analysis window": 1,  # o3 predates the window
+    }
+
+
+@pytest.mark.parametrize(
+    ("purchase", "expected"),
+    [
+        ("2017-01-01 00:00", "train"),
+        ("2018-03-31 23:59", "train"),  # last instant before the validation cut
+        ("2018-04-01 00:00", "val"),  # the cut itself belongs to the later block
+        ("2018-05-31 23:59", "val"),
+        ("2018-06-01 00:00", "test"),
+        ("2018-08-31 23:59", "test"),
+    ],
+)
+def test_split_boundaries_are_left_closed(purchase, expected):
+    labels = temporal_split(pd.Series([pd.Timestamp(purchase)]))
+    assert labels.item() == expected
+
+
+def test_split_is_an_ordered_categorical():
+    """Otherwise groupby and plots alphabetise the blocks into test, train, val."""
+    labels = temporal_split(pd.Series(pd.to_datetime(["2018-07-01", "2017-05-01"])))
+    assert labels.cat.ordered
+    assert list(labels.cat.categories) == config.SPLIT_ORDER
+
+
+def test_the_blocks_never_overlap_in_time():
+    """The guard against a random split sneaking back in.
+
+    Rule 1 of CLAUDE.md: train on the older months, evaluate on the recent ones.
+    Any shuffling would put a late purchase in train or an early one in test,
+    and these inequalities would stop holding.
+    """
+    dates = pd.Series(pd.date_range("2017-01-15", "2018-08-15", freq="17D"))
+    frame = pd.DataFrame({"purchase": dates.sample(frac=1, random_state=config.SEED)})
+    frame["split"] = temporal_split(frame["purchase"])
+
+    latest = frame.groupby("split", observed=True)["purchase"].max()
+    earliest = frame.groupby("split", observed=True)["purchase"].min()
+    assert latest["train"] < earliest["val"]
+    assert latest["val"] < earliest["test"]
+
+
+def test_the_spine_carries_its_split():
+    """Persisted with the data, so no two scripts can derive different blocks."""
+    spine = spine_of(
+        [
+            order(),
+            order(
+                order_id="o2",
+                purchase="2018-07-01 10:00",
+                approved="2018-07-01 12:00",
+                carrier="2018-07-03 09:00",
+            ),
+        ],
+        [review(), review(review_id="r2", order_id="o2", created="2018-07-12")],
+    )
+    assert dict(zip(spine["order_id"], spine["split"], strict=True)) == {
+        "o1": "train",
+        "o2": "test",
     }

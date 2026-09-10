@@ -60,6 +60,15 @@ DATE_COLUMNS = {
 ANALYSIS_START = pd.Timestamp("2017-01-01")
 ANALYSIS_END = pd.Timestamp("2018-09-01")  # exclusive
 
+# Temporal split boundaries, on order_purchase_timestamp. Three blocks, cut by
+# date and never at random: train < validation < test in time. Calibration and
+# the operating threshold are fixed on validation, leaving test untouched for
+# the final number. Chosen so validation and test share a logistics regime -
+# the crises of 2017-11 and 2018-02/03 stay in training. See D-08.
+VAL_START = pd.Timestamp("2018-04-01")
+TEST_START = pd.Timestamp("2018-06-01")
+SPLIT_ORDER = ["train", "val", "test"]
+
 # Fixed rate, documented rather than modelled. See docs/decisiones.md, D-04.
 BRL_PER_EUR = 3.6
 

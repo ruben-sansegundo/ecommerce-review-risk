@@ -464,3 +464,87 @@ que D-06 exige. Las fechas concretas de corte se fijan en D-08.
 Esta decisión **supersede la prevalencia reportada en D-06** (14,67%), que se calculó antes de
 fijar el criterio de entrada. D-06 se mantiene sin tocar: describe correctamente lo que se
 midió en S1 y con qué población.
+
+---
+
+## D-08 · Fechas de corte del split temporal
+
+**Fecha:** 2026-09-10 (S2)
+
+### Contexto
+
+D-07 fijó que el split se corta por `order_purchase_timestamp` en tres bloques. Faltaban las
+fechas. La suposición de partida era que se elegirían por tamaño —tantos meses a cada bloque—,
+pero el EDA mensual la invalidó.
+
+**La prevalencia no es estacionaria.** Oscila entre el 9,87% y el 22,13% según el mes, con una
+desviación de 3,4 puntos sobre una media del 13,42%. Y no deriva de forma suave: va a golpes
+de régimen.
+
+La causa está medida:
+
+| Desenlace de la entrega | Prevalencia |
+|---|---|
+| Entregado a tiempo | 9,2% |
+| Entregado tarde | **54,0%** |
+| Nunca entregado | **69,4%** |
+
+La correlación mensual entre prevalencia y tasa de retraso es **0,872**. Los dos picos son
+episodios logísticos distintos: noviembre de 2017 es Black Friday (el volumen salta de 4.477 a
+7.302 pedidos y la tasa de retraso a 14,0%), mientras que febrero y marzo de 2018 tienen
+volumen normal y tasas de retraso del 15,7% y 20,7% — un colapso de reparto sin pico de
+demanda detrás.
+
+Esto convierte la elección de los cortes en una decisión sobre **qué régimen ve cada bloque**,
+no sobre cuántos meses le tocan a cada uno.
+
+### Decisión
+
+| Bloque | Rango | Pedidos | Positivos | Prevalencia |
+|---|---|---|---|---|
+| Entrenamiento | 2017-01 .. 2018-03 | 64.360 | 9.458 | 14,70% |
+| Validación | 2018-04 .. 2018-05 | 13.612 | 1.614 | 11,86% |
+| Test | 2018-06 .. 2018-08 | 18.664 | 1.901 | 10,19% |
+
+Constantes `VAL_START` y `TEST_START` en `src/config.py`. La columna `split` se persiste
+**dentro de la espina**: si cada script recalcula el reparto, tarde o temprano dos usan cortes
+distintos sin que nadie lo note.
+
+*Razón, en dos partes:*
+
+1. **Las dos crisis quedan en entrenamiento.** Un modelo que nunca ha visto una red logística
+   saturada va a fallar precisamente cuando más falta hace intervenir.
+2. **Validación y test comparten régimen** (11,86% frente a 10,19%). Como el umbral y la
+   calibración se fijan sobre validación, solo transfieren al test si la tasa base de ambos
+   es parecida. Esta es la restricción que manda sobre el tamaño de los bloques.
+
+### Alternativas descartadas
+
+| Reparto | Validación | Test | Motivo del descarte |
+|---|---|---|---|
+| **A** 13/3/4 | 18,26% | 10,45% | La crisis entera cae en validación. El umbral se fijaría sobre un régimen que casi dobla al del test y llegaría desplazado. Descartada de plano. |
+| **C** 14/3/3 | 15,37% | 10,19% | Validación el doble de grande (3.180 positivos, curva de calibración más estable), pero calibra sobre un régimen ajeno al test y el modelo no ve marzo de 2018. |
+
+Contra C se aceptó una validación más pequeña porque 1.614 positivos bastan para una curva de
+calibración de diez tramos (unos 160 por tramo), y la coincidencia de régimen pesa más que la
+estabilidad extra de la curva.
+
+### Consecuencias
+
+- **La cifra de referencia del test es 10,19%**, no el 13,42% global. Toda métrica de test se
+  lee contra ella; usar la prevalencia global inflaría la lectura de cualquier lift.
+- **Hay deriva de tasa base entre entrenamiento (14,70%) y test (10,19%).** El modelo tenderá
+  a sobreestimar el riesgo en test. Es exactamente lo que la calibración sobre validación debe
+  corregir, y el residuo se reporta en el notebook 04 en vez de esconderse.
+- **El retraso de entrega es el conductor dominante del target.** Pero `late` se conoce a
+  posteriori: el trabajo de modelado en t₀ y t₁ es predecir el *riesgo de retraso* con lo
+  visible en ese instante — plazo prometido, distancia, historial del vendedor, velocidad de
+  traspaso al transportista. Esto orienta el catálogo de features de S2-B4.
+- **Hallazgo lateral, útil para features:** la mediana de entrega real menos plazo prometido es
+  de **−13 días**. Los plazos de Olist llevan un colchón grande y sistemático, así que la
+  variable relevante no es el plazo en bruto sino cuánto colchón queda.
+- El diagnóstico usa `order_delivered_customer_date`, prohibida como feature. Vive
+  **solo** en `notebooks/01_eda.ipynb`, con el aviso al lado; `src/features.py` no la toca ni
+  para diagnosticar. Explicar el pasado y construir un predictor son actividades distintas, y
+  mezclarlas en el mismo módulo es como una fuga acaba entrando.
+- Figuras en `reports/figures/`: `target_by_month.png` y `prevalence_vs_delay.png`.

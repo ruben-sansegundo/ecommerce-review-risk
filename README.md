@@ -32,6 +32,33 @@ business could actually act, and the two are compared side by side.
 Quantifying what the extra information at t₁ is worth — and whether it arrives too late to
 be useful — is the point of the exercise.
 
+## What the data says
+
+Negative reviews are not spread evenly over time. Prevalence swings between 9.9% and 22.1%
+month to month, and it tracks the delivery-delay rate almost one to one — monthly r = **0.87**.
+Two episodes stand out: Black Friday 2017, and a delivery collapse in February–March 2018 that
+happened at entirely ordinary order volume.
+
+![Monthly order volume and prevalence of 1-2 star reviews, with the temporal split blocks marked](reports/figures/target_by_month.png)
+
+| Delivery outcome | Negative reviews |
+|---|---|
+| Delivered on time | 9.2% |
+| Delivered late | **54.0%** |
+| Never delivered | **69.4%** |
+
+![Negative reviews and late deliveries by month, moving together](reports/figures/prevalence_vs_delay.png)
+
+Whether an order arrives late is only known afterwards, so the modelling job at t₀ and t₁ is to
+predict *delay risk* from what is visible at the time: promised lead time, distance, seller
+history, how fast the parcel reaches the carrier.
+
+That instability also decides where the temporal split is cut — both crises sit in training,
+while validation and test share a calm regime so a threshold calibrated on one transfers to the
+other. Test prevalence is **10.19%**, and every test metric is read against that figure rather
+than the overall 13.4%. Full analysis in [`notebooks/01_eda.ipynb`](notebooks/01_eda.ipynb);
+reasoning in [`docs/decisiones.md`](docs/decisiones.md) D-08.
+
 ## Methodological commitments
 
 These are deliberate constraints, not defaults. They are what the project is actually about.
