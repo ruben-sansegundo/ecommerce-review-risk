@@ -378,3 +378,89 @@ se le juzga. Las fechas de corte se fijan en S2, tras ver la distribución mensu
   valores distintos. Cualquier feature de historial de cliente calculada sobre `customer_id`
   daría siempre "cliente nuevo, cero pedidos previos". Debe advertirse en `features.md`.
 - Los 25 meses de ventana temporal dan margen suficiente para los tres bloques.
+
+> **Actualización (S2, D-07):** al cerrar el criterio de entrada —solo pedidos que alcanzan
+> t₁— la población baja a 96.636 pedidos y la prevalencia al **13,42%**. La cifra vigente es
+> la de D-07; la de esta sección es la que se midió antes de esa decisión.
+
+---
+
+## D-07 · Población de análisis y momentos de decisión
+
+**Fecha:** 2026-09-10 (S2)
+
+### Contexto
+
+D-06 fijó la unidad de análisis y el target, pero dejó abiertos tres detalles que solo
+aparecen al construir la tabla: qué hacer con los pedidos que nunca llegaron a salir, cómo
+materializar t₁ como columna, y dónde empieza y acaba la ventana temporal.
+
+Hechos medidos sobre `data/raw`:
+
+| Hecho | Valor |
+|---|---|
+| Pedidos con `order_delivered_carrier_date` nula | 1.783 (1,79%) |
+| — de los cuales `unavailable`, `invoiced`, `processing` | 1.224, el 100% de esos estados |
+| — `canceled` sin salir | 550 de 625 |
+| Pedidos con fecha de transportista **anterior** a la de aprobación | 1.359 (1,4%) |
+| Pedidos con transportista pero sin `order_approved_at` | 14 |
+| Volumen fuera del cuerpo del dataset | 329 pedidos en 2016, 20 en 2018-09/10 |
+
+### Decisión
+
+**El criterio de entrada es haber alcanzado t₁, no el `order_status`.** Un pedido entra si
+tiene fecha de aprobación *y* fecha de entrega al transportista.
+
+*Razón:* el estado final es una consecuencia posterior al momento de predicción; filtrar por
+él sería seleccionar la muestra con información del futuro. "Alcanzó t₁" es una condición
+verificable en el propio instante en que el modelo se ejecutaría. Además mantiene dentro los
+75 pedidos cancelados que sí llegaron a salir, que son justamente casos de interés.
+
+Los 14 pedidos con transportista pero sin aprobación también salen: retroceder a la fecha de
+compra para rellenar t₀ sería inventar el instante en que el modelo se ejecuta.
+
+**t₁ = `max(order_approved_at, order_delivered_carrier_date)`**, con una bandera
+`t1_was_inverted` que marca los 1.350 pedidos afectados dentro de la ventana.
+
+*Razón:* la inversión es un artefacto de registro, no una secuencia real —un paquete no se
+entrega al transportista antes de que se apruebe el pago—. Descartar esos pedidos sesgaría la
+muestra hacia los vendedores con administración ordenada, que plausiblemente son también los
+de menos reseñas negativas: exactamente en la dirección del target. El clamp conserva la fila
+y la bandera permite comprobar en S3 si ese grupo se comporta distinto.
+
+**Ventana de análisis: 2017-01-01 a 2018-08-31**, sobre `order_purchase_timestamp`.
+
+*Razón:* los 329 pedidos repartidos por 2016 son un piloto con un patrón de negocio distinto,
+y 2018-09/10 son 20 pedidos de un corte de exportación a mitad de mes. Dejar las colas
+distorsionaría los bloques del split temporal justo en sus bordes, que es donde se leen los
+resultados. Constantes en `src/config.py`, no incrustadas en el código.
+
+**El split temporal se cortará sobre `order_purchase_timestamp`, no sobre t₀ ni t₁.**
+
+*Razón:* un eje único e independiente del modelo garantiza que t₀ y t₁ caigan exactamente en
+los mismos bloques. Si cada uno se cortara por su propio momento de decisión, las poblaciones
+divergirían y la comparación dejaría de medir solo el valor de la señal adicional, que es lo
+que D-06 exige. Las fechas concretas de corte se fijan en D-08.
+
+### Consecuencias
+
+- **La prevalencia baja del 14,67% al 13,42%** sobre 96.636 pedidos. No es un error de
+  cálculo: exigir que el pedido alcance t₁ elimina los `unavailable` y los `canceled` que
+  nunca salieron, que son desproporcionadamente reseñas de 1★. Es el número que acompaña a
+  todas las métricas a partir de aquí, por la regla 6 de `CLAUDE.md`.
+- **La lectura del umbral cambia, el umbral no.** Sigue siendo 0,25, porque depende solo de
+  `c_int / (e · C_neg)`. Pero frente a un 13,42% de base, actuar por encima de 0,25 es actuar
+  sobre el segmento de **1,9 veces** el riesgo base, no 1,7.
+- El embudo de exclusiones viaja en `spine.attrs["funnel"]` y se imprime con `make features`,
+  de modo que la población es auditable sin abrir un notebook.
+- `data/interim/spine.parquet` es a partir de ahora la tabla base: una fila por pedido con el
+  target, los dos momentos de decisión y `review_creation_date`, esta última guardada para
+  que S3 pueda distinguir "pedido anterior" de "etiqueta ya conocida" al construir agregados.
+- Se añade `pyarrow` como dependencia. Parquet conserva los tipos entre escritura y lectura;
+  con CSV las tres columnas de fecha volverían como texto en cada carga.
+
+### Nota sobre D-06
+
+Esta decisión **supersede la prevalencia reportada en D-06** (14,67%), que se calculó antes de
+fijar el criterio de entrada. D-06 se mantiene sin tocar: describe correctamente lo que se
+midió en S1 y con qué población.

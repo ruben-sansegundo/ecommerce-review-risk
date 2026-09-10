@@ -16,7 +16,8 @@ prioritisation — costs considerably less.
 
 **Question:** which orders will end in a negative review, early enough to do something about it?
 
-**Target:** `review_score <= 2`, binary. Measured prevalence: **14.7%**.
+**Target:** `review_score <= 2`, binary. Measured prevalence: **13.4%** over the 96,636
+orders that reached both decision moments.
 
 ### Two decision moments
 
@@ -68,7 +69,7 @@ part of the deliverable.
 
 Acting on an order with probability `p` of a negative review pays off when
 `p > c_int / (e · C_neg)`, which gives a threshold of **0.25** against a measured base rate
-of 14.7% — acting on the segment carrying roughly 1.7x the baseline risk.
+of 13.4% — acting on the segment carrying roughly 1.9x the baseline risk.
 Note that the threshold depends only on the *ratio*, not on the absolute levels.
 
 Full reasoning, decomposition and sensitivity plan: [`docs/decisiones.md`](docs/decisiones.md)

@@ -3,6 +3,8 @@
 from dataclasses import dataclass
 from pathlib import Path
 
+import pandas as pd
+
 # Repository root, derived from this file's own location so the project works
 # from any clone path. config.py lives in <root>/src/, hence parents[1].
 ROOT = Path(__file__).resolve().parents[1]
@@ -50,6 +52,13 @@ DATE_COLUMNS = {
     "order_items": ["shipping_limit_date"],
     "order_reviews": ["review_creation_date", "review_answer_timestamp"],
 }
+
+# Analysis window, on order_purchase_timestamp. The dataset spans 2016-09 to
+# 2018-10, but the tails are not a business signal: 329 orders across 2016 are a
+# pilot, and 2018-09/10 hold 20 orders from a mid-month export cut. Both ends are
+# trimmed so the temporal split blocks are not distorted by them. See D-07.
+ANALYSIS_START = pd.Timestamp("2017-01-01")
+ANALYSIS_END = pd.Timestamp("2018-09-01")  # exclusive
 
 # Fixed rate, documented rather than modelled. See docs/decisiones.md, D-04.
 BRL_PER_EUR = 3.6

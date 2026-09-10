@@ -58,28 +58,36 @@ que callarse no correlaciona con estar descontento, y es un supuesto más fuerte
 
 ### Prevalencia medida
 
-| | |
+Sobre la población de análisis definida en `decisiones.md` D-07: pedidos que alcanzaron
+ambos momentos de decisión, con reseña, dentro de la ventana temporal.
+
+| Embudo | Pedidos |
 |---|---|
-| Pedidos | 99.441 |
-| Pedidos con reseña | 98.673 |
-| Pedidos sin reseña | 768 (0,77%) |
-| Reseñas duplicadas descartadas | 551 |
-| **Prevalencia `y = 1`** | **14,67%** |
+| Pedidos en el dataset | 99.441 |
+| Alcanzan t₀ y t₁ | 97.644 |
+| Con reseña | 96.913 |
+| Dentro de la ventana de análisis | **96.636** |
+| **Prevalencia `y = 1`** | **13,42%** |
 
 Reparto completo de notas:
 
 | Nota | Pedidos | % |
 |---|---|---|
-| 1 ★ | 11.344 | 11,50% |
-| 2 ★ | 3.131 | 3,17% |
-| 3 ★ | 8.120 | 8,23% |
-| 4 ★ | 19.048 | 19,30% |
-| 5 ★ | 57.030 | 57,80% |
+| 1 ★ | 9.976 | 10,32% |
+| 2 ★ | 2.997 | 3,10% |
+| 3 ★ | 7.993 | 8,27% |
+| 4 ★ | 18.926 | 19,58% |
+| 5 ★ | 56.744 | 58,72% |
 
-**Ventana temporal:** 2016-09-04 a 2018-10-17, 25 meses distintos.
+**Ventana temporal:** 2017-01-01 a 2018-08-31, 20 meses. Las colas del dataset —329 pedidos
+repartidos por 2016 y 20 en septiembre y octubre de 2018— quedan fuera: son un piloto y un
+corte de exportación, no volumen de negocio.
 
-Un 14,67% de prevalencia es el número contra el que hay que leer cualquier métrica de este
-proyecto. Un modelo que prediga "ninguna reseña será negativa", siempre, acierta el 85,33% de
+La prevalencia baja del 14,67% medido en S1 al 13,42% al exigir que el pedido alcance t₁:
+los pedidos que nunca salieron son desproporcionadamente reseñas de 1★.
+
+Un 13,42% de prevalencia es el número contra el que hay que leer cualquier métrica de este
+proyecto. Un modelo que prediga "ninguna reseña será negativa", siempre, acierta el 86,58% de
 las veces y no sirve absolutamente para nada. Por eso la accuracy no aparece como resultado.
 
 ---
