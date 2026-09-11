@@ -909,3 +909,71 @@ que el modelo tenga que reconstruir restando.
 | `class_weight` o SMOTE | Regla 7. El desbalance es cosa del umbral, y reponderar rompe la calibración de la que depende el cálculo en euros |
 | Ajustar `C` | Se barrió: la curva es plana entre 0,01 y 10 (±0,001). Se deja el valor por defecto en vez de fingir que se ha ajustado algo |
 | Medir ya en test | Es el único bloque que queda limpio. Se lee una vez, al final, con todo decidido |
+
+---
+
+## D-12 · LightGBM: criterios de aceptación, fijados antes de entrenar
+
+**Fecha:** 2026-09-11 (S3)
+
+> **Esta sección se escribió y se committeó antes de entrenar el primer modelo.** El historial de
+> git lo acredita. La razón es incómoda pero simple: si la barra se decide viendo el resultado,
+> siempre acaba puesta justo donde el modelo la salta.
+
+### Contexto
+
+D-11 dejó la barra puesta: **0,2342 de PR-AUC en t₀ y 0,2572 en t₁**, sobre validación, con la
+regresión logística. Y dejó además una hipótesis: como trocear las variables empeoró las cosas,
+lo que un árbol añada debería venir sobre todo de **interacciones** — un camino hasta una hoja
+es una conjunción de condiciones, y eso una logística no lo expresa.
+
+### Qué significa "ganar"
+
+Las tres condiciones, y hacen falta las tres:
+
+| # | Condición | Por qué |
+|---|---|---|
+| 1 | PR-AUC superior a la logística **en validación** | El test sigue cerrado |
+| 2 | El intervalo del bootstrap emparejado **excluye el cero** | Con 1.614 positivos, +0,005 cabe dentro del ruido: ya se vio con el troceado quirúrgico |
+| 3 | La diferencia **importa operativamente** | Ver abajo |
+
+**Sobre la tercera.** Intervenir sobre el 10% de validación son 1.361 pedidos, y ahí cada punto
+porcentual de `recall@10%` equivale a unos **16 pedidos rescatados**. Una mejora de +0,4 puntos
+de recall puede ser estadísticamente real y operativamente irrelevante.
+
+### Los tres desenlaces, decididos de antemano
+
+| Desenlace | Qué se hace |
+|---|---|
+| Gana con holgura (intervalo lejos de cero, hueco ≳ 0,02) | LightGBM pasa a S4. La pregunta siguiente es **de dónde** sale la ganancia |
+| Gana por poco (intervalo excluye cero, hueco ~0,005) | **Se queda la logística**, y se explica por qué: calibra mejor de fábrica, se lee en una tabla de coeficientes y no arrastra artefacto ni dependencia de sistema. El árbol se queda documentado con su número |
+| No gana | Se reporta tal cual. La señal es aditiva, y eso es un resultado, no un fracaso |
+
+El caso intermedio es el que hay que tener decidido antes, porque es donde la tentación de
+justificar el modelo complejo es máxima.
+
+### Cómo se entrena, decidido también antes
+
+**Categóricas y nulos nativos.** LightGBM los trata sin ayuda: ni one-hot, ni imputación. Es
+una de las razones de usarlo, y mantiene la matriz igual que la que ve la logística.
+
+**Sin `class_weight` ni `is_unbalance`**, por la regla 7.
+
+**El número de árboles se busca en un corte interno de entrenamiento, y luego se reentrena con
+el bloque entero.** Los últimos dos meses de entrenamiento (2018-02 y 2018-03) hacen de
+validación interna para el early stopping; con ese número de rondas fijado, el modelo se vuelve
+a ajustar sobre los 64.360 pedidos completos.
+
+*Razón, y son dos:* parar directamente sobre el bloque de validación ensuciaría la comparación
+—el modelo habría elegido cuándo parar mirando el mismo bloque que luego lo juzga— y usar solo
+el corte interno para entrenar dejaría fuera las dos crisis logísticas, que D-08 metió en
+entrenamiento a propósito para que el modelo viera una red saturada. Reentrenar con todo
+después recupera las dos cosas.
+
+**Hiperparámetros conservadores y fijos, sin búsqueda.** 64.360 filas, 32 features y ninguna
+señal individual por encima de 0,59 de AUC: el riesgo aquí es memorizar ruido, no quedarse
+corto. Si el modelo gana, se ajustará en S4; si no gana, ninguna rejilla lo va a salvar.
+
+### Resultado
+
+Pendiente. Se escribe debajo cuando el modelo esté entrenado, gane o pierda.
