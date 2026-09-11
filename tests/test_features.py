@@ -8,7 +8,18 @@ import pandas as pd
 import pytest
 
 from src import config
-from src.features import build_spine, first_review_per_order, temporal_split
+from src.data import OlistTables
+from src.features import (
+    T0_FEATURES,
+    T1_FEATURES,
+    build_features,
+    build_spine,
+    feature_columns,
+    first_review_per_order,
+    haversine_km,
+    order_item_attributes,
+    temporal_split,
+)
 
 ORDER_DATES = ["order_purchase_timestamp", "order_approved_at", "order_delivered_carrier_date"]
 
@@ -251,3 +262,195 @@ def test_the_spine_carries_its_split():
         "o1": "train",
         "o2": "test",
     }
+
+
+# --- feature building -------------------------------------------------------
+
+
+def toy_tables(orders_frame_, reviews_frame_):
+    """The nine Olist tables, shrunk to what two orders need.
+
+    Written out rather than sampled from data/raw so the tests keep running
+    without the dataset, and so each value is chosen to make one case obvious.
+    """
+    orders = orders_frame_.copy()
+    orders["order_estimated_delivery_date"] = pd.to_datetime("2017-06-20")
+    # Deliberately absurd: nothing downstream may depend on this column.
+    orders["order_delivered_customer_date"] = pd.to_datetime("2017-06-15")
+
+    items = pd.DataFrame(
+        {
+            "order_id": ["o1", "o1"],
+            "order_item_id": [1, 2],
+            "product_id": ["p-cheap", "p-dear"],
+            "seller_id": ["s1", "s2"],
+            "shipping_limit_date": pd.to_datetime(["2017-06-05", "2017-06-05"]),
+            "price": [10.0, 90.0],
+            "freight_value": [5.0, 15.0],
+        }
+    )
+    products = pd.DataFrame(
+        {
+            "product_id": ["p-cheap", "p-dear"],
+            "product_category_name": ["livros", "moveis"],
+            "product_name_lenght": [40, 50],
+            "product_description_lenght": [200, 400],
+            "product_photos_qty": [1, 3],
+            "product_weight_g": [100.0, 900.0],
+            "product_length_cm": [10.0, 20.0],
+            "product_height_cm": [10.0, 20.0],
+            "product_width_cm": [10.0, 20.0],
+        }
+    )
+    payments = pd.DataFrame(
+        {
+            "order_id": ["o1", "o1"],
+            "payment_sequential": [1, 2],
+            "payment_type": ["credit_card", "voucher"],
+            "payment_installments": [3, 1],
+            "payment_value": [100.0, 20.0],
+        }
+    )
+    customers = pd.DataFrame(
+        {
+            "customer_id": orders["customer_id"],
+            "customer_unique_id": ["person-" + c for c in orders["customer_id"]],
+            "customer_zip_code_prefix": [1000] * len(orders),
+            "customer_city": ["sao paulo"] * len(orders),
+            "customer_state": ["SP"] * len(orders),
+        }
+    )
+    sellers = pd.DataFrame(
+        {
+            "seller_id": ["s1", "s2"],
+            "seller_zip_code_prefix": [2000, 3000],
+            "seller_city": ["sao paulo", "rio"],
+            "seller_state": ["SP", "RJ"],
+        }
+    )
+    geolocation = pd.DataFrame(
+        {
+            "geolocation_zip_code_prefix": [1000, 1000, 1000, 2000, 3000],
+            # Prefix 1000 carries three points, one of them a bad geocode in the
+            # northern hemisphere. The median must ignore it; a mean would not.
+            "geolocation_lat": [-23.55, -23.55, 40.0, -23.50, -22.91],
+            "geolocation_lng": [-46.63, -46.63, 10.0, -46.60, -43.20],
+            "geolocation_city": ["sao paulo", "sao paulo", "nowhere", "sao paulo", "rio"],
+            "geolocation_state": ["SP", "SP", "XX", "SP", "RJ"],
+        }
+    )
+    return OlistTables(
+        orders=orders,
+        order_items=items,
+        order_payments=payments,
+        order_reviews=reviews_frame_,
+        products=products,
+        sellers=sellers,
+        customers=customers,
+        geolocation=geolocation,
+        product_category_name_translation=pd.DataFrame(
+            columns=["product_category_name", "product_category_name_english"]
+        ),
+    )
+
+
+def toy_spine_and_tables():
+    orders = orders_frame([order()])
+    reviews = reviews_frame([review()])
+    tables = toy_tables(orders, reviews)
+    spine = build_spine(tables.orders, tables.order_reviews, tables.customers)
+    return spine, tables
+
+
+def test_build_features_ignores_the_actual_delivery_date():
+    """The leakage proof, not the leakage promise.
+
+    order_delivered_customer_date exists at neither t0 nor t1 and predicts the
+    target almost perfectly. Poisoning it must leave every feature untouched -
+    if any code path ever reads it, this comparison stops matching.
+    """
+    spine, tables = toy_spine_and_tables()
+    honest = build_features(spine, tables)
+
+    poisoned = tables.orders.copy()
+    poisoned["order_delivered_customer_date"] = pd.to_datetime("1999-01-01")
+    features = build_features(spine, OlistTables(**{**tables.__dict__, "orders": poisoned}))
+
+    pd.testing.assert_frame_equal(honest, features)
+
+
+def test_every_built_column_is_declared_at_one_moment():
+    """A feature that belongs to neither list is a feature nobody has vetted."""
+    spine, tables = toy_spine_and_tables()
+    built = build_features(spine, tables)
+    assert set(built.columns) == set(spine.columns) | set(T0_FEATURES) | set(T1_FEATURES)
+
+
+def test_the_two_moments_claim_disjoint_features():
+    assert not set(T0_FEATURES) & set(T1_FEATURES)
+    assert len(set(T0_FEATURES)) == len(T0_FEATURES)
+    assert feature_columns("t1") == T0_FEATURES + T1_FEATURES
+    assert feature_columns("t0") == T0_FEATURES
+
+
+def test_an_unknown_moment_is_refused():
+    with pytest.raises(ValueError, match="unknown moment"):
+        feature_columns("t2")
+
+
+def test_t1_features_are_absent_from_the_t0_column_list():
+    """The t0 model must not see the carrier handover, however convenient."""
+    for column in ["handover_days", "handover_vs_limit_days", "remaining_days_at_t1"]:
+        assert column not in feature_columns("t0")
+
+
+def test_haversine_matches_a_known_distance():
+    """Sao Paulo to Rio de Janeiro is about 357 km in a straight line."""
+    km = haversine_km(-23.55, -46.63, -22.91, -43.20)
+    assert 350 < km < 365
+
+
+def test_zip_coordinates_ignore_a_bad_geocode():
+    """Prefix 1000 has one stray point in the northern hemisphere."""
+    spine, tables = toy_spine_and_tables()
+    built = build_features(spine, tables)
+    # Sao Paulo to Rio, not Sao Paulo to a stray point in the Mediterranean.
+    assert 350 < built["distance_km"].item() < 365
+    assert not built["same_state"].item()
+
+
+def test_an_all_missing_weight_stays_missing():
+    """groupby.sum() reports 0 for an all-NaN group: a weightless parcel."""
+    items = pd.DataFrame(
+        {
+            "order_id": ["o1"],
+            "order_item_id": [1],
+            "product_id": ["p1"],
+            "seller_id": ["s1"],
+            "shipping_limit_date": pd.to_datetime(["2017-06-05"]),
+            "price": [10.0],
+            "freight_value": [5.0],
+        }
+    )
+    products = pd.DataFrame(
+        {
+            "product_id": ["p1"],
+            "product_category_name": ["livros"],
+            "product_description_lenght": [100],
+            "product_photos_qty": [1],
+            "product_weight_g": [float("nan")],
+            "product_length_cm": [10.0],
+            "product_height_cm": [10.0],
+            "product_width_cm": [10.0],
+        }
+    )
+    assert pd.isna(order_item_attributes(items, products)["weight_g"].item())
+
+
+def test_the_dominant_seller_is_the_one_behind_the_dearest_item():
+    """Multi-seller orders are common; D-06 picks the seller by item value."""
+    spine, tables = toy_spine_and_tables()
+    built = build_features(spine, tables)
+    assert built["seller_state"].item() == "RJ"  # s2, in Rio, sold the 90.0 item
+    assert built["product_category"].item() == "moveis"
+    assert built["n_sellers"].item() == 2

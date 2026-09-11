@@ -28,8 +28,13 @@ cuesta bastante menos.
 
 **Pregunta:** ¿qué pedidos van a acabar en reseña negativa, con antelación suficiente para actuar?
 
-**Target:** `review_score <= 2`, binario. Prevalencia **medida: 14,7%**
-(11,5% de 1 estrella + 3,2% de 2 estrellas, sobre reseñas). Ver `docs/decisiones.md` D-06.
+**Target:** `review_score <= 2`, binario. Prevalencia **13,42%** sobre la población de
+análisis: 96.636 pedidos que alcanzan t₁, tienen reseña y caen en la ventana 2017-01 a 2018-08.
+Ver `docs/decisiones.md` D-06 y D-07.
+
+**La prevalencia no es estacionaria.** Oscila entre 9,9% y 22,1% según el mes y sigue a la tasa
+de retraso de entrega (correlación mensual 0,87). La del bloque de test es **10,19%**, y es esa
+—no la global— la que acompaña a cualquier métrica de test. Ver D-08.
 
 **Dos momentos de decisión.** Se modelan los dos y se comparan en la misma tabla:
 
@@ -87,7 +92,7 @@ Estas son la razón de ser del proyecto. Si una propuesta las incumple, no la ha
    desbalance se gestiona con el umbral optimizado por coste esperado. Si se prueban pesos de
    clase, es como comparación documentada, y con recalibración posterior.
 8. **Calibración obligatoria.** Sin probabilidades calibradas, el cálculo de impacto en euros
-   es ficción. Curva de calibración + Brier score en el notebook 04.
+   es ficción. Curva de calibración + Brier score en el notebook de negocio.
 9. **Semillas fijas** en todo lo que tenga aleatoriedad.
 
 ---
@@ -126,17 +131,18 @@ ecommerce-review-risk/
 ├── .gitignore
 ├── data/                  # vacío en git salvo .gitkeep y manifest.json
 │   ├── raw/               # CSVs de Kaggle, inmutables
-│   ├── interim/           # tablas unidas
-│   └── processed/         # matrices listas para modelo
+│   ├── interim/           # spine.parquet: una fila por pedido, target y t₀/t₁
+│   └── processed/         # features.parquet: matriz lista para modelo
 ├── docs/
 │   ├── problema.md        # pregunta de negocio, target, matriz de costes
 │   ├── decisiones.md      # registro de decisiones con su porqué
 │   └── features.md        # feature → disponibilidad temporal
 ├── notebooks/
-│   ├── 01_eda.ipynb
-│   ├── 02_baseline.ipynb
-│   ├── 03_model.ipynb
-│   └── 04_business.ipynb
+│   ├── 01_eda.ipynb       # target en el tiempo, cortes del split
+│   ├── 02_signal.ipynb    # señal candidata en t₀ y t₁
+│   ├── 03_baseline.ipynb
+│   ├── 04_model.ipynb
+│   └── 05_business.ipynb
 ├── src/                   # paquete instalable: `from src.x import y` sin tocar sys.path
 │   ├── config.py          # rutas, SEED, tablas, parámetros de coste
 │   ├── data.py            # descarga y carga
@@ -172,31 +178,68 @@ una entrevista**.
 
 ## 7. Estado actual
 
-**Sesión 1 de 8 — encuadre y esqueleto.** Al día 2026-09-08.
+**Sesión 2 de 8 terminada — población, split temporal y features.** Al día 2026-09-11.
 
-`docs/decisiones.md` es el documento de traspaso entre sesiones: recoge las decisiones
-tomadas y su porqué. Léelo junto a este fichero antes de proponer nada.
+`docs/decisiones.md` es el documento de traspaso entre sesiones: recoge las decisiones tomadas
+y su porqué. Léelo junto a este fichero y a `docs/features.md` antes de proponer nada.
 
-Hecho en S1:
+### Hecho
 
-- [x] Estructura de carpetas y `.gitignore`
-- [x] Entorno reproducible (`pyproject.toml` + `uv.lock`), verificado en WSL2
-- [x] `docs/decisiones.md` — D-01 a D-05, incluida la matriz de costes cerrada
-- [x] `README.md`, `Makefile`, `requirements.txt` derivado
-- [ ] `src/config.py` y `src/data.py` — **ficheros creados pero vacíos a propósito**
-- [ ] Exploración del esquema: filas por tabla, claves de unión, rango de fechas,
-      prevalencia real del target
-- [ ] `docs/problema.md`
-- [ ] `data/manifest.json`
-- [ ] Remoto de git y primer commit
+**S1 — encuadre y esqueleto** (D-01 a D-06)
 
-Bloqueado por: el `KAGGLE_API_TOKEN` en `.env`, y la URL del repositorio en GitHub.
+- [x] Estructura, entorno reproducible con `uv`, `README.md`, `Makefile`
+- [x] `src/config.py` y `src/data.py`: descarga vía API de Kaggle con alternativa manual,
+      `data/manifest.json` con hash por tabla, exploración del esquema
+- [x] `docs/problema.md` y matriz de costes cerrada
+- [x] Remoto de git y primeros commits
 
-**Rubén quiere escribir `config.py` y `data.py` paso a paso para aprenderlos**, no recibirlos
-hechos. Explica antes de cada incremento y espera confirmación. Esto va por delante de la
-velocidad.
+**S2 — población, split y features** (D-07 a D-09)
 
-**No** se hace EDA en profundidad, ni features, ni modelo. Eso es S2 y S3.
+- [x] `build_spine()`: 96.636 pedidos, una fila cada uno, con target y los dos momentos
+- [x] Split temporal en tres bloques, elegido por régimen logístico y persistido en la espina
+- [x] 27 features (`T0_FEATURES` 22 + `T1_FEATURES` 5) en `src/features.py`
+- [x] 35 tests, incluida la prueba de no fuga que envenena la fecha de entrega real
+- [x] `notebooks/01_eda.ipynb` y `notebooks/02_signal.ipynb`, con figuras en el README
+- [x] `docs/features.md` completo: feature → momento, AUC univariante, nulos, origen
+
+### Cifras vigentes
+
+| | |
+|---|---|
+| Población de análisis | 96.636 pedidos, 2017-01 a 2018-08 |
+| Prevalencia global | 13,42% |
+| Entrenamiento | 2017-01 .. 2018-03 · 64.360 · 14,70% |
+| Validación | 2018-04 .. 2018-05 · 13.612 · 11,86% |
+| **Test** | 2018-06 .. 2018-08 · 18.664 · **10,19%** |
+| Mejor AUC univariante | 0,590 (`freight_total`) |
+
+### Lo que S2 dejó claro y condiciona S3
+
+- **El retraso de entrega domina el target** (54,0% de prevalencia cuando el pedido llega tarde
+  frente a 9,2% cuando llega a tiempo), pero **no es el único canal**: `n_items` predice la
+  reseña sin predecir el retraso. No reduzcas el problema a un predictor de retraso.
+- **Ninguna variable es fuerte por sí sola.** Un predictor individual espectacular en este
+  dataset es sospecha de fuga antes que buena noticia.
+- **Las relaciones son no lineales y la señal vive en las colas.** Esto da contenido real a la
+  comparación de la regla 5: para que la regresión logística compita habrá que darle las
+  variables troceadas en tramos.
+
+### Siguiente: S3
+
+1. **Agregados de historial de vendedor con ventana hacia atrás.** Es la feature que falta y el
+   punto del proyecto donde es más fácil colar una fuga. Matiz que la regla 3 no cubre del
+   todo: no basta con usar pedidos *anteriores*, hay que usar **etiquetas ya conocidas** en ese
+   instante — la reseña llega una mediana de 10 días después de la compra. Por eso la espina
+   guarda `review_creation_date`.
+2. **Baseline**: regla trivial, luego regresión logística. Con su número explícito.
+3. **LightGBM**, que tiene que batir al baseline o no se justifica.
+
+### Cómo trabaja Rubén
+
+Bloque a bloque, revisando cada incremento antes del siguiente, para poder defender cada línea
+en una entrevista. Explica antes de escribir y espera confirmación. Esto va por delante de la
+velocidad. Los notebooks los ejecuta él en VS Code; déjalos formateados con `ruff` antes de que
+los abra, porque un buffer abierto de antes sobrescribe el formato al guardar.
 
 ---
 

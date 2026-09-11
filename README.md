@@ -162,7 +162,7 @@ make lint     # ruff check and format
 │   ├── problema.md    # business question, target, cost matrix
 │   ├── decisiones.md  # decision log with rationale
 │   └── features.md    # feature -> moment of availability
-├── notebooks/         # 01_eda, 02_baseline, 03_model, 04_business
+├── notebooks/         # 01_eda, 02_signal, 03_baseline, 04_model, 05_business
 ├── src/               # importable package; all logic lives here
 ├── tests/
 └── reports/figures/   # figures embedded in this README

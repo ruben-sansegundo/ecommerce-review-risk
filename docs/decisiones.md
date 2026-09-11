@@ -535,7 +535,7 @@ estabilidad extra de la curva.
   lee contra ella; usar la prevalencia global inflaría la lectura de cualquier lift.
 - **Hay deriva de tasa base entre entrenamiento (14,70%) y test (10,19%).** El modelo tenderá
   a sobreestimar el riesgo en test. Es exactamente lo que la calibración sobre validación debe
-  corregir, y el residuo se reporta en el notebook 04 en vez de esconderse.
+  corregir, y el residuo se reporta en el notebook de negocio en vez de esconderse.
 - **El retraso de entrega es el conductor dominante del target.** Pero `late` se conoce a
   posteriori: el trabajo de modelado en t₀ y t₁ es predecir el *riesgo de retraso* con lo
   visible en ese instante — plazo prometido, distancia, historial del vendedor, velocidad de
@@ -548,3 +548,79 @@ estabilidad extra de la curva.
   para diagnosticar. Explicar el pasado y construir un predictor son actividades distintas, y
   mezclarlas en el mismo módulo es como una fuga acaba entrando.
 - Figuras en `reports/figures/`: `target_by_month.png` y `prevalence_vs_delay.png`.
+
+---
+
+## D-09 · Catálogo de features y prueba de no fuga
+
+**Fecha:** 2026-09-10 (S2)
+
+### Contexto
+
+Con la población y el split cerrados, quedaba decidir qué se le da al modelo en cada momento.
+La exploración se hizo **solo sobre el bloque de entrenamiento**: mirar la relación entre una
+variable y el target en validación o test es elegir features con información de los bloques
+que luego juzgan el resultado, aunque no intervenga ningún modelo.
+
+### Decisión
+
+**27 features en una sola construcción, con dos listas que declaran el momento.**
+`T0_FEATURES` (22) y `T1_FEATURES` (5) en `src/features.py`; el modelo de t₀ entrena con la
+primera, el de t₁ con la suma.
+
+*Razón:* dos pipelines separados para t₀ y t₁ acabarían divergiendo —una corrección aplicada a
+uno y no al otro— y la comparación dejaría de ser limpia. Una construcción y dos vistas.
+Además convierte la pertenencia temporal en un dato verificable: un test exige que toda columna
+construida esté declarada exactamente en una de las dos listas.
+
+**Los nulos se quedan nulos.** LightGBM los trata de forma nativa y un pipeline logístico
+necesitará su propia imputación. Imputar en `features.py` enterraría una decisión de modelado
+dentro del código de datos.
+
+**Las categóricas se dejan como `category`, sin codificar.** La codificación
+(one-hot, target encoding, nativa de LightGBM) es una decisión de modelado de S3, y el target
+encoding además tiene su propio riesgo de fuga.
+
+### La prueba de no fuga
+
+`tests/test_features.py::test_build_features_ignores_the_actual_delivery_date` construye la
+matriz dos veces: la segunda con `order_delivered_customer_date` puesta a un valor absurdo, y
+exige que ambas sean **idénticas**.
+
+*Razón:* la fecha de entrega real no existe ni en t₀ ni en t₁ y predice el target casi
+perfectamente (54,0% de prevalencia en los pedidos que llegan tarde frente a 9,2% en los que
+llegan a tiempo). Un comentario que diga "no usar esta columna" no impide nada. Este test
+convierte la afirmación en una propiedad comprobable: si cualquier ruta de código llega a
+leerla, las dos matrices dejan de coincidir.
+
+El diagnóstico que **sí** usa esa columna vive solo en los notebooks, con el aviso al lado.
+
+### Consecuencias
+
+- **Ninguna variable es fuerte por sí sola.** El mejor AUC univariante es 0,590
+  (`freight_total`); las de t₁ rondan 0,57. El valor tendrá que salir de la combinación. En
+  este dataset, un predictor individual espectacular es una sospecha de fuga, no una
+  buena noticia.
+- **Hay dos canales de riesgo, no uno.** Además del retraso, existe un canal de complejidad del
+  pedido: `n_items` predice la reseña (AUC 0,554) y **no** predice el retraso (0,488). Más
+  artículos es más superficie para que algo falle, y eso no es logística. Un modelo planteado
+  solo como predictor de retraso perdería esa señal.
+- **Las relaciones son no lineales y la señal vive en las colas.** `handover_days` es plana en
+  nueve deciles y salta al 25,6% en el décimo; `remaining_days_at_t1` solo informa en su decil
+  más bajo. Esto da contenido real a la comparación exigida por la regla 5: LightGBM debería
+  ganar a la regresión logística, y para que la logística compita habrá que darle versiones
+  troceadas de las peores.
+- **La geografía y la categoría pesan más de lo esperado**: estado del comprador del 11,7% al
+  23,3%, categoría del 8,9% al 23,4%. Ambas son categóricas de cardinalidad alta.
+- **`payment_type` no aporta** (13,9%–15,2%). Se conserva en `docs/features.md` como resultado
+  negativo documentado en vez de desaparecer sin dejar rastro.
+- Se añade `data/processed/features.parquet` y `make features` lo genera junto a la espina.
+
+### Pendiente para S3
+
+Ninguna feature describe el **historial del vendedor**, que es el predictor obvio que falta.
+Requiere ventana hacia atrás, y con un matiz que la regla 3 de `CLAUDE.md` no cubre del todo:
+no basta con usar pedidos *anteriores*, hay que usar **etiquetas ya conocidas** en ese
+instante. La reseña llega una mediana de 10 días después de la compra, así que al puntuar un
+pedido existen pedidos anteriores cuya reseña todavía no se ha escrito. Por eso la espina
+guarda `review_creation_date` desde S2.
