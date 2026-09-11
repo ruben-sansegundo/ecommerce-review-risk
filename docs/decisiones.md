@@ -864,8 +864,16 @@ La mayoría de estas variables son grosso modo monótonas —`seller_neg_rate` s
 que diez coeficientes independientes tienen que redescubrirlo desde trozos más ruidosos. Lo que
 se gana en dos variables con forma de cola se pierde en veinticinco corrientes.
 
-Esto **cambia lo que se le pide a LightGBM**: si la señal sobrevive a ser tratada linealmente,
-lo que el árbol añada tendrá que venir de **interacciones**, no de curvatura.
+Esto **cambia lo que se le pide a LightGBM**, con un matiz que conviene no perder. Lo medido es
+que la curvatura **servida de la forma más burda** —deciles en one-hot, que compran doblarse
+tirando el orden— cuesta más de lo que aporta. Eso no demuestra que no haya curvatura: una
+representación más suave (splines) podría capturarla sin ese coste, y no se ha probado.
+
+La afirmación defendible es la estrecha: si el árbol gana, **las interacciones son la hipótesis
+principal** —un camino hasta una hoja es una conjunción de condiciones, y eso una logística no lo
+expresa por muchos tramos que se le den—, pero no queda aislada de la curvatura suave. Y si el
+árbol **no** gana con claridad, la conclusión es igual de publicable: la señal es esencialmente
+aditiva, la logística basta, y eso es más barato de mantener y más fácil de explicar.
 
 ### La comparación t₀ frente a t₁, medida por primera vez
 
