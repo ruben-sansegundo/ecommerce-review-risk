@@ -4,6 +4,7 @@ The frames here are tiny and invented. build_spine is a pure function, so none
 of these tests touch data/raw - they check the rules, not the dataset.
 """
 
+import numpy as np
 import pandas as pd
 import pytest
 
@@ -18,6 +19,8 @@ from src.features import (
     first_review_per_order,
     haversine_km,
     order_item_attributes,
+    seller_history,
+    shrinkage_from_moments,
     temporal_split,
 )
 
@@ -454,3 +457,186 @@ def test_the_dominant_seller_is_the_one_behind_the_dearest_item():
     assert built["seller_state"].item() == "RJ"  # s2, in Rio, sold the 90.0 item
     assert built["product_category"].item() == "moveis"
     assert built["n_sellers"].item() == 2
+
+
+# --- seller history ---------------------------------------------------------
+#
+# One market (seller "sm", two orders reviewed in January) and one seller under
+# test ("s"), whose orders are timed so that every clock matters:
+#
+#   o-a  ships 03-03, LATE, its 1-star review is written 03-15
+#   o-d  ships 03-06, on time, its 5-star review is written 03-20
+#   o-b  scored at t0 = 03-10  <-- here, o-a and o-d have shipped but neither
+#                                  review exists yet
+#   o-c  scored at t0 = 04-01  <-- here, all three reviews exist
+#
+# Every expected value below is worked out by hand from that timeline.
+
+
+def history_rows(order_id, seller, approved, carrier, limit, review_at, score):
+    """One order, as the three raw tables see it."""
+    return (
+        {
+            "order_id": order_id,
+            "customer_id": f"c-{order_id}",
+            "order_purchase_timestamp": approved,
+            "order_approved_at": approved,
+            "order_delivered_carrier_date": carrier,
+        },
+        {
+            "order_id": order_id,
+            "order_item_id": 1,
+            "product_id": "p",
+            "seller_id": seller,
+            "shipping_limit_date": limit,
+            "price": 100.0,
+            "freight_value": 10.0,
+        },
+        {
+            "review_id": f"r-{order_id}",
+            "order_id": order_id,
+            "review_score": score,
+            "review_creation_date": review_at,
+        },
+    )
+
+
+TIMELINE = [
+    history_rows("o-m1", "sm", "2017-01-01", "2017-01-02", "2017-01-10", "2017-01-05", 1),
+    history_rows("o-m2", "sm", "2017-01-01", "2017-01-02", "2017-01-10", "2017-01-05", 5),
+    history_rows("o-a", "s", "2017-03-01", "2017-03-03", "2017-03-02", "2017-03-15", 1),
+    history_rows("o-d", "s", "2017-03-05", "2017-03-06", "2017-03-10", "2017-03-20", 5),
+    history_rows("o-b", "s", "2017-03-10", "2017-03-11", "2017-03-20", "2017-03-25", 5),
+    history_rows("o-c", "s", "2017-04-01", "2017-04-02", "2017-04-10", "2017-04-20", 5),
+]
+
+
+def history_tables(timeline=TIMELINE):
+    orders = orders_frame([row[0] for row in timeline])
+    items = pd.DataFrame([row[1] for row in timeline])
+    items["shipping_limit_date"] = pd.to_datetime(items["shipping_limit_date"])
+    reviews = reviews_frame([row[2] for row in timeline])
+    empty = pd.DataFrame()
+    return OlistTables(
+        orders=orders,
+        order_items=items,
+        order_reviews=reviews,
+        customers=customers_frame(orders),
+        order_payments=empty,
+        products=empty,
+        sellers=empty,
+        geolocation=empty,
+        product_category_name_translation=empty,
+    )
+
+
+def history_of(tables=None):
+    tables = tables or history_tables()
+    spine = build_spine(tables.orders, tables.order_reviews, tables.customers)
+    return seller_history(spine, tables).set_index("order_id")
+
+
+def test_an_order_never_enters_its_own_seller_history():
+    """The first order of a seller has to see an empty history, not itself."""
+    row = history_of().loc["o-a"]
+    assert row["seller_prior_orders"] == 0
+    assert row["seller_prior_reviews"] == 0
+    assert pd.isna(row["seller_tenure_days"])
+
+
+def test_a_prior_order_counts_as_shipped_but_not_yet_as_reviewed():
+    """The double clock, which rule 3 of CLAUDE.md does not cover on its own.
+
+    At t0 of o-b the seller has shipped twice, and that is knowable. Neither
+    review has been written yet, and using them would be reading the future.
+    """
+    row = history_of().loc["o-b"]
+    assert row["seller_prior_orders"] == 2
+    assert row["seller_prior_reviews"] == 0
+    assert row["seller_tenure_days"] == pytest.approx(7.0)
+
+
+def test_a_label_joins_the_history_once_its_review_exists():
+    """By o-c the same three orders have all been reviewed, one of them badly."""
+    row = history_of().loc["o-c"]
+    assert row["seller_prior_orders"] == 3
+    assert row["seller_prior_reviews"] == 3
+    # Market rate at t0 of o-c: 2 negatives out of 5 known reviews.
+    assert row["seller_neg_rate"] == pytest.approx((1 + 25 * 0.4) / (3 + 25))
+
+
+def test_a_seller_without_known_labels_falls_back_to_the_market():
+    """Not a 0% negative rate: an unknown rate, answered with the market's."""
+    rows = history_of()
+    market_rate = 1 / 2  # o-m1 and o-m2, one of them negative, both known by 01-06
+    assert rows.loc["o-a", "seller_neg_rate"] == pytest.approx(market_rate)
+    assert rows.loc["o-b", "seller_neg_rate"] == pytest.approx(market_rate)
+
+
+def test_the_late_handover_rate_runs_on_the_operational_clock_alone():
+    """It needs no review at all: a late shipment is known the day it ships."""
+    row = history_of().loc["o-b"]
+    # Seller: 1 late of 2 shipped. Market at 03-10: 1 late of 4 with a deadline.
+    assert row["seller_late_handover_rate"] == pytest.approx((1 + 3 * 0.25) / (2 + 3))
+
+
+def test_poisoning_reviews_that_are_still_in_the_future_changes_nothing():
+    """The leakage proof of S2, aimed at the aggregates instead of the matrix.
+
+    Every review written after t0 of o-b is flipped to one star. Those reviews
+    do not exist at that moment, so not one of o-b's aggregates may move.
+    """
+    honest = history_of()
+
+    tables = history_tables()
+    reviews = tables.order_reviews.copy()
+    future = reviews["review_creation_date"] > pd.Timestamp("2017-03-10")
+    reviews.loc[future, "review_score"] = 1
+    poisoned = history_of(OlistTables(**{**tables.__dict__, "order_reviews": reviews}))
+
+    assert future.sum() == 4  # o-a, o-d, o-b and o-c all sit in the future here
+    pd.testing.assert_series_equal(honest.loc["o-b"], poisoned.loc["o-b"])
+    # And the order that can see those labels does move, or the test proves
+    # nothing: a comparison that passes when the code is broken is decoration.
+    assert honest.loc["o-c", "seller_neg_rate"] != poisoned.loc["o-c", "seller_neg_rate"]
+
+
+def test_the_market_prior_looks_backwards_too():
+    """A late burst of negatives must not touch what came before it."""
+    honest = history_of()
+
+    late_burst = [
+        history_rows(f"o-z{i}", "sz", "2018-01-01", "2018-01-02", "2018-01-10", "2018-01-05", 1)
+        for i in range(20)
+    ]
+    flooded = history_of(history_tables(TIMELINE + late_burst))
+
+    pd.testing.assert_frame_equal(honest, flooded.loc[honest.index])
+
+
+def test_shrinkage_from_moments_recovers_a_known_prior():
+    """Beta-binomial sellers with a prior strength of 30, recovered from counts."""
+    rng = np.random.default_rng(config.SEED)
+    strength, mean = 30.0, 0.15
+    rates = rng.beta(mean * strength, (1 - mean) * strength, size=4000)
+    trials = pd.Series(rng.integers(20, 200, size=4000))
+    successes = pd.Series(rng.binomial(trials, rates))
+
+    assert shrinkage_from_moments(successes, trials) == pytest.approx(strength, rel=0.15)
+
+
+def test_shrinkage_is_enormous_when_every_seller_is_really_the_same():
+    """Sellers drawn from one single rate: nothing to tell apart, so shrink hard."""
+    rng = np.random.default_rng(config.SEED)
+    trials = pd.Series(np.full(2000, 50))
+    successes = pd.Series(rng.binomial(50, 0.15, size=2000))
+
+    assert shrinkage_from_moments(successes, trials) > 1_000
+
+
+def test_shrinkage_is_infinite_when_the_spread_is_all_noise():
+    """Rates too alike even for coin flips: the estimate has nothing left to divide by."""
+    trials = pd.Series(np.full(500, 50))
+    successes = pd.Series(np.full(500, 7))
+
+    assert shrinkage_from_moments(successes, trials) == float("inf")

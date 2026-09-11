@@ -3,8 +3,8 @@
 Tabla obligatoria por la regla 4 de `CLAUDE.md`: **cada feature declara en qué momento está
 disponible**. Se actualiza en el mismo commit que añade la feature, no después.
 
-> **Estado:** 27 features, construidas en S2 (`src/features.py`). Faltan los agregados de
-> historial de vendedor y de cliente, que necesitan ventana hacia atrás y se abordan en S3.
+> **Estado:** 32 features. 27 construidas en S2 y 5 de historial de vendedor añadidas en S3
+> (`src/features.py`). Falta el historial de cliente, descartado por cobertura: ver el final.
 
 **Momento** es uno de:
 
@@ -27,14 +27,19 @@ relación es inversa (más alto = mejor).
 | Feature | AUC | Nulos | Origen | Notas |
 |---|---|---|---|---|
 | `freight_total` | 0,590 | 0% | `order_items` | La más informativa de todas. Es un compuesto de peso, volumen y distancia: el marketplace ya ha estimado la dificultad logística y la ha puesto en el precio del envío |
+| `seller_neg_rate` | 0,565 | 0% | espina, `order_items`, `order_reviews` | **Historial de vendedor.** Tasa histórica de reseña negativa, suavizada. Deciles del 10,6% al 21,8%. La segunda más informativa del catálogo |
 | `n_items` | 0,554 | 0% | `order_items` | Canal ajeno al retraso: predice la reseña y **no** predice el retraso (AUC 0,488 contra la etiqueta de retraso) |
 | `payment_value` | 0,550 | 0% | `order_payments` | Muy correlacionada con `price_total`; ambas se mantienen y se revisará en S3 |
 | `distance_km` | 0,544 | 0,52% | `customers`, `sellers`, `geolocation` | Distancia en línea recta comprador-vendedor. Nula cuando un prefijo postal no aparece en `geolocation` |
+| `seller_late_handover_rate` | 0,540 | 0% | espina, `order_items` | **Historial de vendedor.** Tasa histórica de despacho fuera de plazo. No necesita ninguna reseña: solo el reloj operativo |
 | `price_total` | 0,540 | 0% | `order_items` | |
+| `seller_tenure_days` | 0,532 | 3,61% | espina, `order_items` | **Historial de vendedor.** Días desde su primer despacho. Nula en su primer pedido: no tiene antigüedad, y un cero afirmaría que abrió hoy |
 | `weight_g` | 0,530 | 0,02% | `order_items`, `products` | Suma con `min_count=1`: un pedido sin ningún peso conocido queda nulo, no a cero |
 | `promised_days` | 0,530 | 0% | `orders` | Plazo prometido, en días desde la compra. Satura a partir del tercer decil |
 | `n_products` | 0,526 | 0% | `order_items` | |
 | `volume_cm3` | 0,526 | 0,02% | `products` | |
+| `seller_prior_orders` | 0,525 | 0% | espina, `order_items` | **Historial de vendedor.** Pedidos ya despachados en t₀ |
+| `seller_prior_reviews` | 0,523 | 0% | espina, `order_reviews` | **Historial de vendedor.** Etiquetas **ya escritas** en t₀. Mide cuánto sabemos del vendedor, no lo bueno que es |
 | `installments` | 0,523 | 0% | `order_payments` | |
 | `approval_latency_h` | 0,517 | 0% | `orders` | Horas entre la compra y la aprobación del pago |
 | `freight_ratio` | 0,516 | 0% | `order_items` | `freight_total / price_total`, con el divisor cero convertido a nulo |
@@ -48,6 +53,26 @@ relación es inversa (más alto = mejor).
 | `product_category` | categórica | 1,83% | `products` | 21 niveles con 500+ pedidos, del 8,9% al 23,4%. Categoría del artículo más caro |
 | `customer_state` | categórica | 0% | `customers` | 15 niveles, del 11,7% (SP) al 23,3% (MA). Más señal que casi toda la lista numérica |
 | `seller_state` | categórica | 0% | `sellers` | 7 niveles, del 9,0% al 15,4% |
+
+### Historial de vendedor: el doble reloj
+
+Las cinco features de arriba marcadas como historial se construyen con ventana hacia atrás y
+**as-of t₀**. Lo que las hace distintas del resto es que un pedido pasado entrega su
+información en dos momentos, no en uno:
+
+| Reloj | Qué marca | Cuándo se puede usar | Features |
+|---|---|---|---|
+| Operativo | El pedido se despachó, a tiempo o tarde | En el acto | `seller_prior_orders`, `seller_tenure_days`, `seller_late_handover_rate` |
+| De etiqueta | El cliente escribió su reseña | Mediana de 10 días después | `seller_prior_reviews`, `seller_neg_rate` |
+
+La regla 3 de `CLAUDE.md` pide usar solo pedidos anteriores, y no basta: **el 5,6% de los
+pedidos se puntúa con un vendedor del que no se conoce todavía ninguna etiqueta**, frente al
+3,0% que no tiene ningún pedido anterior. Esos 2,6 puntos son pedidos con historial operativo
+y sin historial de reseñas, y un filtro por fecha de pedido les inventaría una tasa.
+
+Las tasas se suavizan hacia la media del mercado —también acumulada hacia atrás— con
+`m = 25` para la de reseñas y `m = 3` para la de despacho. Los dos valores salen del método de
+los momentos sobre el bloque de entrenamiento, no de probar cuál daba mejor AUC. Ver D-10.
 
 ## t₁ · lo que añade la salida del envío
 
@@ -114,15 +139,14 @@ mayor valor de artículo, y `n_sellers` deja constancia del caso.
 
 ## Lo que todavía no hay
 
-**Historial de vendedor y de cliente.** Ninguna feature actual describe la trayectoria del
-vendedor, y un vendedor que llegó tarde en sus últimos veinte pedidos es el predictor obvio.
-Requiere agregados con ventana hacia atrás, que es el punto del proyecto donde es más fácil
-meter una fuga sin enterarse, y por eso tiene sesión propia (S3).
+**Historial de cliente.** Sería el análogo natural del de vendedor, y en este dataset no lo
+es: solo el 3% de los clientes repite compra, así que la feature sería nula para casi todas
+las filas. Queda documentado como descarte razonado, no como olvido. Si se intenta, tiene que
+ser sobre `customer_unique_id` y nunca sobre `customer_id` (ver el aviso de esquema arriba).
 
-Hay además una sutileza que la regla 3 de `CLAUDE.md` no cubre del todo: no basta con usar
-**pedidos anteriores**, hay que usar **etiquetas ya conocidas**. La reseña de un pedido llega
-una mediana de 10 días después de la compra, así que al puntuar un pedido hay pedidos
-anteriores cuya reseña todavía no existe. Por eso la espina guarda `review_creation_date`.
+**Historial de categoría de producto.** La categoría tiene rango fuerte (8,9% a 23,4%) y un
+agregado histórico por categoría sería la alternativa sin fuga al target encoding. Queda
+pendiente: primero hay que ver si LightGBM ya extrae esa señal de la categórica en crudo.
 
 **Texto de las reseñas.** Reservado a la fase 2 (NLP). Se carga íntegro pero no se toca.
 

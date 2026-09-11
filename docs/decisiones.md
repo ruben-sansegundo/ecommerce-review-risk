@@ -624,3 +624,155 @@ no basta con usar pedidos *anteriores*, hay que usar **etiquetas ya conocidas** 
 instante. La reseña llega una mediana de 10 días después de la compra, así que al puntuar un
 pedido existen pedidos anteriores cuya reseña todavía no se ha escrito. Por eso la espina
 guarda `review_creation_date` desde S2.
+
+---
+
+## D-10 · Historial de vendedor: el doble reloj y el suavizado
+
+**Fecha:** 2026-09-11 (S3)
+
+### Contexto
+
+D-09 dejó el catálogo sin ninguna feature de historial de vendedor, que es el predictor obvio
+que faltaba. Construirlo es el punto del proyecto donde es más fácil meter una fuga, y por una
+razón que la regla 3 de `CLAUDE.md` no cubre: **la regla habla de pedidos anteriores, y el
+problema son las etiquetas**.
+
+Un pedido pasado entrega su información en dos momentos distintos:
+
+| Reloj | Qué marca | Cuándo se puede usar |
+|---|---|---|
+| Operativo | El vendedor despachó, dentro o fuera de plazo | En el acto |
+| De etiqueta | El cliente escribió su reseña | Mediana de 10,2 días después |
+
+Medido sobre la población de análisis:
+
+| Hecho | Valor |
+|---|---|
+| Pedidos sin ningún pedido anterior del mismo vendedor | 3,0% |
+| **Pedidos sin ninguna etiqueta conocida del mismo vendedor** | **5,6%** |
+| Pedidos con menos de 5 etiquetas conocidas | 15,2% |
+| Etiquetas conocidas en t₀, mediana | 51 |
+| Vendedores distintos · pedidos por vendedor | 2.938 · mediana 7, p90 73, máx 1.814 |
+
+Los 2,6 puntos de diferencia entre las dos primeras filas son exactamente el tamaño del
+problema: pedidos cuyo vendedor tiene historial operativo pero del que todavía no se sabe
+ninguna reseña. Un filtro por fecha de pedido les inventaría una tasa.
+
+### Decisión
+
+**Una tabla de eventos con dos filas por pedido, una por reloj.** Cada pedido genera un evento
+de despacho en t₁ y, si tiene reseña, un evento de etiqueta en `review_creation_date`. Se
+ordena por tiempo, se acumula con `cumsum` por vendedor y se recoge el estado con `merge_asof`
+sobre t₀.
+
+*Razón:* la no fuga sale de la **estructura del join**, no de un filtro que alguien pueda
+borrar. Con `allow_exact_matches=False`, el evento de despacho del propio pedido —que cae en
+su t₁, nunca anterior a su t₀— queda fuera por construcción. Coste O(n log n) frente al O(n²)
+de preguntar por cada pedido qué pedidos anteriores tiene su vendedor.
+
+**Cinco features, todas en `T0_FEATURES`:** `seller_prior_orders`, `seller_tenure_days`,
+`seller_prior_reviews`, `seller_neg_rate`, `seller_late_handover_rate`.
+
+`seller_prior_reviews` es feature por derecho propio y no solo un denominador: mide **cuánto
+se sabe** del vendedor, y le permite al modelo desconfiar de una tasa hecha con tres reseñas.
+
+`seller_late_handover_rate` no necesita ninguna etiqueta: que un pedido anterior se despachara
+tarde se supo el día en que se despachó. Es señal del canal logístico —el dominante según
+D-08— disponible en t₀ sin tocar el target.
+
+**As-of t₀ para los dos momentos de decisión.** El historial no se recalcula en t₁.
+
+*Razón:* entre t₀ y t₁ pasan pocos días y el historial extra es marginal, mientras que tener
+dos versiones metería en la diferencia t₀ frente a t₁ una componente que no es la señal del
+despacho. D-04 fijó que esa comparación mide **solo** el valor de la información adicional.
+
+**La base del historial son todos los pedidos que alcanzaron t₁, no la espina.** Son 97.658
+frente a los 96.636 de la población: 1.022 pedidos más, 281 de ellos de 2016.
+
+*Razón:* el vendedor despachó esos pedidos de verdad y sus reseñas existieron de verdad.
+Excluirlos confundiría el **criterio de población** con **lo que se sabía en ese instante**, y
+dejaría sin historial a todos los vendedores activos en enero de 2017, justo en el borde
+inicial del bloque de entrenamiento.
+
+**La etiqueta se considera conocida un día después de su fecha de reseña**, y nunca antes del
+despacho del propio pedido.
+
+*Razón, en dos partes:* `review_creation_date` tiene granularidad de día y llega a medianoche,
+así que leerla literalmente haría contar una reseña "de las 00:00" para un pedido puntuado ese
+mismo día a mediodía. **Cuando la única granularidad disponible es el día, se redondea en la
+dirección que quita información, no en la que la regala.** Y hay 317 pedidos con reseña fechada
+antes de su propio despacho, 30 de ellos antes de su propio t₀: tomadas al pie de la letra,
+esas fechas dejarían entrar el desenlace de un pedido en su propio agregado.
+
+**Las tasas se suavizan hacia la media del mercado, también acumulada hacia atrás**, con la
+forma `(k + m·p̄ₜ) / (n + m)`.
+
+Un vendedor con 2 reseñas conocidas y 1 negativa no tiene una tasa del 50%: tiene ruido. `m`
+son observaciones ficticias de la media del mercado que el vendedor tiene que contrapesar
+antes de que se crea su propia tasa. Con `n = 0` el resultado es exactamente `p̄ₜ`, que es la
+respuesta honesta para un vendedor nuevo — no un 0% de reseñas negativas.
+
+**`p̄ₜ` es la tasa del mercado conocida en t₀**, acumulada con el mismo mecanismo. Usar la
+prevalencia del bloque de entrenamiento metería el futuro por la puerta de atrás, en el único
+sitio donde nadie mira.
+
+**`m` se estima, no se elige.** `shrinkage_from_moments()` aplica el método de los momentos:
+la dispersión que se observa entre vendedores es la dispersión real más el ruido binomial de
+estimar una tasa con pocos intentos; se resta el ruido y `m = p(1-p) / var_real − 1`.
+
+| Umbral de pedidos por vendedor | `seller_neg_rate` | `seller_late_handover_rate` |
+|---|---|---|
+| ≥ 5 | m = 22,9 | m = 2,8 |
+| ≥ 10 | m = 28,9 | m = 3,5 |
+| ≥ 20 | m = 29,6 | m = 4,2 |
+
+De ahí `SHRINKAGE_NEG = 25` y `SHRINKAGE_LATE = 3`. La curva de AUC univariante sobre
+entrenamiento, calculada aparte, apunta en la misma dirección para las dos (mejora monótona
+con `m` en la de reseñas, empeoramiento monótono en la de despacho), lo que da dos caminos
+independientes que coinciden.
+
+### El hallazgo: las dos tasas no se suavizan igual
+
+Que `m` salga **25 en una y 3 en la otra** es el resultado interesante del bloque, no una
+inconsistencia. La desviación típica real entre vendedores es de 0,064-0,072 sobre una media
+de 0,146 en la tasa de reseñas, y de 0,127-0,151 sobre una media de 0,092 en la de despacho.
+
+Los vendedores **se diferencian mucho más en puntualidad que en reseñas**. Un puñado de envíos
+ya deja claro si un vendedor despacha rápido, mientras que un puñado de reseñas con una base
+del 14,7% es casi solo azar. El suavizado es un remedio contra denominadores finos: aplicarlo
+donde el denominador no es fino solo destruye la dispersión que lleva la señal.
+
+Se comprobó además que el suavizado fuerte **no** convierte la tasa en un proxy de tamaño: la
+correlación de Spearman con `seller_prior_reviews` cae de +0,269 sin suavizar a +0,038 con
+`m = 25`, y el AUC restringido a vendedores con historial grueso (≥ 50 reseñas) apenas se
+mueve. La ganancia viene de tratar mejor a los vendedores finos, que es para lo que está.
+
+### Consecuencias
+
+- **`seller_neg_rate` es la segunda feature más informativa del proyecto** (AUC 0,565, por
+  detrás de `freight_total` con 0,590), con deciles monótonos del 10,6% al 21,8% sobre una base
+  del 14,70%. `seller_late_handover_rate` da 0,540. Las tres de volumen y antigüedad rondan
+  0,52-0,53: **el historial vale por su tasa, no por su tamaño**.
+- Sigue sin haber ninguna variable fuerte por sí sola, lo que D-09 ya avisaba. El historial no
+  cambia esa conclusión, la refuerza.
+- Cinco tests nuevos sobre un escenario de seis pedidos con todos los valores calculados a
+  mano, incluido el del doble reloj y una versión de la prueba de envenenamiento de S2 dirigida
+  a los agregados: se ponen a 1 estrella todas las reseñas futuras y se exige que el pedido
+  puntuado antes no se mueva **y que el puntuado después sí**. Una comparación que pasa también
+  cuando el código está roto no prueba nada.
+- Dos refactors para no duplicar convenciones ya fijadas: `handover_moment()` (el clamp de t₁
+  de D-07) y `dominant_item()` (el vendedor dominante de D-06) pasan a estar escritos una sola
+  vez, porque el historial tiene que fechar sus eventos exactamente igual que la espina.
+- `seller_tenure_days` queda nula en el primer pedido de cada vendedor (3,6% en entrenamiento).
+  Coherente con D-09: los nulos se quedan nulos, y un cero afirmaría que el vendedor abrió hoy.
+
+### Alternativas descartadas
+
+| Alternativa | Motivo |
+|---|---|
+| Recalcular el historial as-of t₁ | Ensucia la comparación t₀ vs t₁ con algo que no es la señal del despacho, y duplica código y tests |
+| Historial de cliente | Solo el 3% de los clientes repite: sería nulo en casi todas las filas. Documentado como descarte razonado en `features.md` |
+| Peor vendedor del pedido en vez del dominante | Defendible —una sola tienda mala arruina la reseña—, pero afecta al 1,30% de los pedidos y duplicaría la convención de D-06 |
+| Target encoding de vendedor | Es esto mismo hecho mal: sin ventana hacia atrás y sin el reloj de la etiqueta |
+| `m` ajustado por AUC | Se midió la curva, pero elegir por ella es ajustar un hiperparámetro a la métrica con la que luego se defiende el resultado. El método de los momentos lo estima sin mirar al target más que a través de la dispersión |
