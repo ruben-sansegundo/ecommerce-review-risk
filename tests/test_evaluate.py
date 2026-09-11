@@ -13,6 +13,7 @@ import pytest
 from src import config
 from src.evaluate import (
     best_threshold,
+    bootstrap_difference,
     brier,
     comparison_table,
     cost_per_order,
@@ -214,3 +215,25 @@ def test_the_sensitivity_grid_covers_every_combination():
 def test_malformed_input_is_rejected_rather_than_scored(y, scores):
     with pytest.raises(ValueError):
         pr_auc(y, scores)
+
+
+def test_a_real_difference_between_models_excludes_zero():
+    rng = np.random.default_rng(config.SEED)
+    y = rng.uniform(size=4000) < 0.15
+    good = np.where(y, rng.uniform(0.4, 1.0, 4000), rng.uniform(0.0, 0.6, 4000))
+    useless = rng.uniform(size=4000)
+
+    diff, lo, hi = bootstrap_difference(y, good, useless, draws=200)
+    assert diff > 0
+    assert lo > 0
+
+
+def test_two_copies_of_one_model_cannot_be_told_apart():
+    rng = np.random.default_rng(config.SEED)
+    y = rng.uniform(size=2000) < 0.15
+    scores = rng.uniform(size=2000)
+
+    diff, lo, hi = bootstrap_difference(y, scores, scores, draws=200)
+    # Paired resampling: the same rows for both, so the difference is exactly
+    # zero on every draw rather than merely close to it.
+    assert (diff, lo, hi) == (0.0, 0.0, 0.0)

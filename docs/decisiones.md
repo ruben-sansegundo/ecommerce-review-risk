@@ -616,6 +616,12 @@ El diagnóstico que **sí** usa esa columna vive solo en los notebooks, con el a
   negativo documentado en vez de desaparecer sin dejar rastro.
 - Se añade `data/processed/features.parquet` y `make features` lo genera junto a la espina.
 
+> **Nota añadida en S3 (D-11).** La expectativa escrita arriba —que para competir habría que
+> darle a la regresión logística las variables troceadas— **quedó falsada al medirla**. Trocear
+> todas las numéricas en deciles le cuesta a la logística 0,035 de PR-AUC en t₀ y 0,046 en t₁;
+> trocear solo las que sí se doblan no la distingue de la lisa. La observación sobre la forma de
+> la señal sigue siendo correcta; la receta que se dedujo de ella, no. Ver D-11.
+
 ### Pendiente para S3
 
 Ninguna feature describe el **historial del vendedor**, que es el predictor obvio que falta.
@@ -776,3 +782,122 @@ mueve. La ganancia viene de tratar mejor a los vendedores finos, que es para lo 
 | Peor vendedor del pedido en vez del dominante | Defendible —una sola tienda mala arruina la reseña—, pero afecta al 1,30% de los pedidos y duplicaría la convención de D-06 |
 | Target encoding de vendedor | Es esto mismo hecho mal: sin ventana hacia atrás y sin el reloj de la etiqueta |
 | `m` ajustado por AUC | Se midió la curva, pero elegir por ella es ajustar un hiperparámetro a la métrica con la que luego se defiende el resultado. El método de los momentos lo estima sin mirar al target más que a través de la dispersión |
+
+---
+
+## D-11 · Baselines: qué hay que batir, y con cuánto margen
+
+**Fecha:** 2026-09-11 (S3)
+
+### Contexto
+
+La regla 5 de `CLAUDE.md` exige que el modelo complejo bata a un baseline **con un número
+explícito**. Para que ese número signifique algo hacen falta tres cosas que es fácil dar por
+supuestas: que ambos se ajusten sobre las mismas filas, que se midan con el mismo código, y que
+la diferencia se compare contra el ruido del bloque donde se mide.
+
+### Decisión
+
+**Cuatro baselines en `src/train.py`, en los dos momentos.**
+
+| Baseline | Qué es | Para qué está |
+|---|---|---|
+| `constant` | La tasa base de entrenamiento para todos | El suelo: su PR-AUC **es** la prevalencia, por construcción |
+| `single feature` | La variable más fuerte usada en crudo | Lo que escribiría un analista sin modelo: `freight_total` en t₀, `handover_days` en t₁ |
+| `logistic` | Regresión logística sobre todo el momento | El baseline serio |
+| `logistic binned` | Igual, con las numéricas en deciles | La receta que D-09 dedujo de la forma de la señal |
+
+**Todo se mide en validación. El test no se toca.** La elección de modelo ocurre en validación;
+el bloque de test se lee una sola vez al final de S3, con las decisiones ya congeladas. Además
+sus tasas base no son intercambiables: 11,86% frente a 10,19%.
+
+**Tres decisiones de preprocesado que no son obvias:**
+
+1. **La nulidad va por una rama aparte** (`MissingIndicator`), no dentro del imputado. Que un
+   vendedor no tenga antigüedad significa que es nuevo. Imputar el valor y no dejar constancia
+   de que faltaba es fingir que nunca faltó.
+2. **Categóricas con `min_frequency=50`.** `product_category` tiene ~70 niveles con cola larga;
+   una columna por nivel serían decenas de columnas casi vacías. **Nada de target encoding**:
+   es exactamente lo que D-10 hace bien, hecho mal —sin ventana hacia atrás y sin reloj de
+   etiqueta—.
+3. **Sin `class_weight`**, por la regla 7. El desbalance lo gestiona el umbral, y reponderar
+   distorsionaría justo las probabilidades de las que dependerá el cálculo en euros.
+
+**Un gap solo se reporta con su intervalo.** `evaluate.bootstrap_difference()` remuestrea las
+filas de validación con reemplazo y puntúa **los dos modelos sobre las mismas filas
+remuestreadas**, de modo que la suerte de qué pedidos salieron se cancela y queda la diferencia
+entre modelos. Sin esto, "A gana a B por 0,002" es una frase sin contenido.
+
+### Resultados sobre validación (13.612 pedidos, prevalencia 11,86%)
+
+| Modelo | Momento | PR-AUC | recall@10% | lift@10% |
+|---|---|---|---|---|
+| `constant` | t₀ y t₁ | 0,1186 | 9,9% | 0,98 |
+| `single feature` | t₀ | 0,1645 | 17,2% | 1,72 |
+| `logistic binned` | t₀ | 0,1992 | 20,0% | 2,00 |
+| **`logistic`** | **t₀** | **0,2342** | **24,5%** | **2,45** |
+| `single feature` | t₁ | 0,1788 | 16,7% | 1,67 |
+| `logistic binned` | t₁ | 0,2113 | 21,9% | 2,19 |
+| **`logistic`** | **t₁** | **0,2572** | **27,0%** | **2,70** |
+
+Todas las distancias contra la constante y contra la variable suelta son reales con holgura: la
+logística le saca +0,1156 [+0,0989, +0,1347] a la constante en t₀ y +0,1386 en t₁.
+
+### El hallazgo: trocear empeoró las cosas
+
+D-09 observó que las relaciones no son lineales y **dedujo** que habría que darle a la logística
+las variables troceadas. Medido, ocurre lo contrario:
+
+| | t₀ | t₁ |
+|---|---|---|
+| `logistic` − `logistic binned` | **+0,0350** [+0,0230, +0,0480] | **+0,0459** [+0,0328, +0,0590] |
+
+No es la regularización ni el número de tramos: se barrió `C` ∈ {0,01 … 10} y tramos ∈ {5, 10,
+20}, y la troceada pierde en toda la rejilla. Trocear **solo** las features que de verdad se
+doblan (`promised_days`, `handover_days`, `remaining_days_at_t1` y las tres de historial) da
++0,0018 [−0,0007, +0,0044] en t₀ y +0,0022 [−0,0005, +0,0052] en t₁: **indistinguible de cero**,
+así que no se añade nada a `src/train.py` por ello.
+
+*La lectura:* los deciles en one-hot compran la capacidad de doblarse a cambio de tirar el orden.
+La mayoría de estas variables son grosso modo monótonas —`seller_neg_rate` sube del 10,6% al
+21,8% a lo largo de sus deciles— y un término lineal captura eso con **un** parámetro, mientras
+que diez coeficientes independientes tienen que redescubrirlo desde trozos más ruidosos. Lo que
+se gana en dos variables con forma de cola se pierde en veinticinco corrientes.
+
+Esto **cambia lo que se le pide a LightGBM**: si la señal sobrevive a ser tratada linealmente,
+lo que el árbol añada tendrá que venir de **interacciones**, no de curvatura.
+
+### La comparación t₀ frente a t₁, medida por primera vez
+
+**+0,0230 de PR-AUC [+0,0132, +0,0316]** a favor de t₁, con la logística. Real, y más pequeño de
+lo que los AUC univariantes de S2 dejaban intuir. Es la primera cifra del eje central del
+proyecto, y la que S4 tendrá que traducir a euros contra una ventana de actuación más corta.
+
+### Hallazgo lateral, candidato a feature de S4
+
+La logística asigna +0,70 a `seller_prior_orders` y −0,64 a `seller_prior_reviews`, que son
+casi la misma columna. No es inestabilidad sin más: el modelo está usando su **diferencia**, o
+sea los pedidos que el vendedor ya ha despachado y de los que todavía no se sabe la reseña. Un
+vendedor en plena punta de volumen, sin juzgar aún. Merece ser una feature explícita y no algo
+que el modelo tenga que reconstruir restando.
+
+### Consecuencias
+
+- **La barra para B4 es 0,2342 en t₀ y 0,2572 en t₁.** Un LightGBM que se quede ahí añade
+  complejidad a cambio de nada, y lo honesto será decirlo.
+- `make train` imprime la tabla completa; `notebooks/03_baseline.ipynb` cuenta la historia y
+  deja `reports/figures/baseline_pr.png`.
+- Seis tests nuevos en `tests/test_train.py`, incluido el equivalente de la prueba de fuga de S2
+  aplicada al modelo: se envenenan todas las columnas de t₁ y se exige que el modelo de t₀
+  puntúe idéntico.
+- El notebook no usa `.style` de pandas: requiere `jinja2`, que no está en el entorno. Un
+  notebook que no se puede ejecutar no documenta nada.
+
+### Alternativas descartadas
+
+| Alternativa | Motivo |
+|---|---|
+| Target encoding de las categóricas | La versión con fuga de lo que D-10 hace bien |
+| `class_weight` o SMOTE | Regla 7. El desbalance es cosa del umbral, y reponderar rompe la calibración de la que depende el cálculo en euros |
+| Ajustar `C` | Se barrió: la curva es plana entre 0,01 y 10 (±0,001). Se deja el valor por defecto en vez de fingir que se ha ajustado algo |
+| Medir ya en test | Es el único bloque que queda limpio. Se lee una vez, al final, con todo decidido |

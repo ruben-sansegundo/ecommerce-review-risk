@@ -229,6 +229,45 @@ def best_threshold(
     return cutoff, float(do_nothing_cost(y, costs) - totals[m])
 
 
+def bootstrap_difference(
+    y_true,
+    scores_a,
+    scores_b,
+    metric=pr_auc,
+    draws: int = 400,
+    seed: int = config.SEED,
+) -> tuple[float, float, float]:
+    """Difference between two models on the same rows, with a 95% interval.
+
+    "Model A beats model B by 0.002" is not a claim until you know what 0.002
+    looks like next to the noise of the block it was measured on. Resampling
+    the rows with replacement and rescoring both models on each resample gives
+    the spread of that difference directly.
+
+    Paired on purpose: both models are scored on the very same resampled rows,
+    so the shared luck of which orders were drawn cancels out and what is left
+    is the difference between the models.
+
+    Returns the observed difference and the 2.5 / 97.5 percentiles of the
+    resampled ones. An interval that straddles zero means the block cannot
+    tell the two apart.
+    """
+    y, a = _as_arrays(y_true, scores_a)
+    _, b = _as_arrays(y_true, scores_b)
+
+    rng = np.random.default_rng(seed)
+    spread = []
+    for _ in range(draws):
+        rows = rng.integers(0, y.size, y.size)
+        # A resample with no positives at all has no metric to speak of. With a
+        # block this size it should never happen; skipping beats crashing.
+        if y[rows].any() and not y[rows].all():
+            spread.append(metric(y[rows], a[rows]) - metric(y[rows], b[rows]))
+
+    lo, hi = np.percentile(spread, [2.5, 97.5])
+    return float(metric(y, a) - metric(y, b)), float(lo), float(hi)
+
+
 def score_model(
     name: str,
     moment: str,
