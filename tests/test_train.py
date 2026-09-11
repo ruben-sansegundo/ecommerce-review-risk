@@ -25,6 +25,16 @@ def synthetic_matrix(rows: int = 600, seed: int = 0) -> pd.DataFrame:
 
     matrix = pd.DataFrame(columns)
     matrix["split"] = np.repeat(["train", "val", "test"], [rows // 2, rows // 4, rows // 4])
+    # Purchase dates laid out like the real blocks, so the inner split that
+    # chooses the number of trees has training rows on both sides of its cut.
+    matrix["order_purchase_timestamp"] = pd.concat(
+        [
+            pd.Series(pd.date_range("2017-01-01", "2018-03-31", periods=rows // 2)),
+            pd.Series(pd.date_range("2018-04-01", "2018-05-31", periods=rows // 4)),
+            pd.Series(pd.date_range("2018-06-01", "2018-08-31", periods=rows // 4)),
+        ],
+        ignore_index=True,
+    )
     # The target leans on one t0 feature, so a fitted model has something real
     # to find and a leak has something to give itself away with.
     risk = 1 / (1 + np.exp(-matrix["freight_total"]))
@@ -91,3 +101,52 @@ def test_an_unknown_model_is_refused():
         train.baseline_scores(
             "gradient boosted wishful thinking", "t0", train.split_frames("t0", matrix), "val"
         )
+
+
+def test_the_number_of_trees_is_decided_without_looking_at_validation():
+    """The inner split lives inside training; validation must not move it.
+
+    Poisoning validation is the check: if early stopping ever watched that
+    block, the round count would change with it.
+    """
+    matrix = synthetic_matrix()
+    honest = train.lightgbm_rounds("t0", matrix)
+
+    poisoned = matrix.copy()
+    validation = poisoned["split"] == "val"
+    poisoned.loc[validation, "freight_total"] = np.where(
+        poisoned.loc[validation, "y"], 999.0, -999.0
+    )
+
+    assert train.lightgbm_rounds("t0", poisoned) == honest
+
+
+def test_the_tree_is_refitted_on_the_whole_training_block():
+    """Rounds come from the inner split; the model that ships sees every row.
+
+    The two logistics crises sit in training because D-08 put them there. A
+    model fitted only on the inner split would never have seen them.
+    """
+    matrix = synthetic_matrix()
+    rounds = train.lightgbm_rounds("t0", matrix)
+    # The same frame with the tail of training removed, validation left alone.
+    early = matrix["order_purchase_timestamp"] < train.INNER_VALIDATION_START
+    inner_only = matrix[(matrix["split"] != "train") | early]
+
+    full = train.lightgbm_scores("t0", matrix, "val", rounds=rounds)
+    partial = train.lightgbm_scores("t0", inner_only, "val", rounds=rounds)
+
+    assert not np.allclose(full, partial)
+
+
+def test_a_t0_tree_cannot_be_moved_by_a_t1_column():
+    """The same leakage proof the logistic gets, for the model that may ship."""
+    matrix = synthetic_matrix()
+    honest = train.lightgbm_scores("t0", matrix, "val", rounds=20)
+
+    poisoned_matrix = matrix.copy()
+    for column in T1_FEATURES:
+        poisoned_matrix[column] = np.where(poisoned_matrix["y"], 999.0, -999.0)
+    poisoned = train.lightgbm_scores("t0", poisoned_matrix, "val", rounds=20)
+
+    np.testing.assert_array_equal(honest, poisoned)

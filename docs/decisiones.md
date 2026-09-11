@@ -974,6 +974,111 @@ después recupera las dos cosas.
 señal individual por encima de 0,59 de AUC: el riesgo aquí es memorizar ruido, no quedarse
 corto. Si el modelo gana, se ajustará en S4; si no gana, ninguna rejilla lo va a salvar.
 
-### Resultado
+### Resultado: no gana. Se queda la logística
 
-Pendiente. Se escribe debajo cuando el modelo esté entrenado, gane o pierda.
+| Modelo | Momento | PR-AUC | recall@10% |
+|---|---|---|---|
+| **lightgbm** | t₀ | **0,2387** | 0,2441 |
+| logistic | t₀ | 0,2342 | **0,2454** |
+| **lightgbm** | t₁ | **0,2647** | 0,2546 |
+| logistic | t₁ | 0,2572 | **0,2701** |
+
+| Criterio | Veredicto |
+|---|---|
+| 1 · PR-AUC superior | **sí** — +0,0045 en t₀, +0,0076 en t₁ |
+| 2 · El intervalo excluye el cero | **no** — los cuatro lo cruzan |
+| 3 · Diferencia operativamente relevante | **no** — el `recall@10%` es **peor**, en 0,1 y 1,6 puntos |
+
+Los intervalos, sobre 400 remuestreos emparejados:
+
+| | PR-AUC | recall@10% |
+|---|---|---|
+| t₀ | +0,0045 [−0,0062, +0,0145] | −0,0012 [−0,0169, +0,0131] |
+| t₁ | +0,0076 [−0,0040, +0,0190] | −0,0155 [−0,0313, +0,0012] |
+
+El árbol gana en la métrica que integra la curva entera y pierde en la que mira la cabeza del
+ranking, que es la única parte sobre la que alguien actuaría. **El criterio 1 es el que se suele
+citar, y es el único que el árbol pasa.**
+
+### Por qué no gana: sobreajusta desde la ronda 25
+
+El corte interno eligió **69 árboles**, un número lo bastante pequeño como para sospechar del
+propio diseño: la validación interna son febrero y marzo de 2018, la crisis logística que D-08
+metió a propósito en entrenamiento, y un desajuste de régimen podría estar parando el modelo
+antes de tiempo.
+
+La curva lo descarta. Medida sobre validación **como diagnóstico, no para elegir nada**:
+
+| Árboles | 10 | 25 | 50 | **69** | 100 | 200 | 400 | 800 | 1200 |
+|---|---|---|---|---|---|---|---|---|---|
+| t₀ | 0,2370 | 0,2398 | 0,2379 | **0,2387** | 0,2376 | 0,2339 | 0,2287 | 0,2161 | 0,2075 |
+| t₁ | 0,2667 | 0,2699 | 0,2671 | **0,2647** | 0,2641 | 0,2627 | 0,2577 | 0,2458 | 0,2361 |
+
+El máximo está en torno a 25 árboles y a partir de ahí baja. Las 69 rondas no se quedaron
+cortas: ya estaban pasadas del pico. Y aun parando en el punto óptimo elegido con trampa —
+mirando el bloque que luego juzga — el árbol llega a 0,2398 y 0,2699, márgenes de +0,006 y
++0,013 que tampoco cambiarían el veredicto.
+
+Que un boosting con tasa de aprendizaje 0,05 sature en 25 árboles dice por sí solo lo fina que
+es la señal.
+
+### La importancia por ganancia está plana
+
+Ninguna feature pasa del **7,6%** de la ganancia total. El árbol no encuentra una regla dominante
+sobre la que construir: se reparte fino entre todo. Es lo mismo que S2 vio desde el otro lado
+cuando ningún AUC univariante superó 0,59. La cabeza de la lista —`seller_neg_rate`,
+`product_category`, `customer_state`, `distance_km`— coincide con lo que ya leía la logística en
+sus coeficientes.
+
+### Lo que esto dice de los datos
+
+Más interesante que qué modelo ganó: **la señal de estas 32 features es esencialmente aditiva.**
+
+Hay dos sondeos independientes en busca de estructura más allá de una suma ponderada, y los dos
+salen vacíos. Trocear las variables buscando **curvatura** empeoró el resultado (D-11). Un árbol
+libre de construir cualquier conjunción que quiera no encuentra **interacciones** que valgan
+0,01 de PR-AUC. No es que el árbol esté mal ajustado: es que no hay gran cosa que ajustar.
+
+### Segunda opinión sobre t₀ frente a t₁
+
+Con el árbol: **+0,0260 [+0,0115, +0,0391]**, frente a +0,0230 [+0,0132, +0,0316] de la
+logística. Las dos clases de modelo coinciden, así que la cifra es una propiedad de la
+**información disponible**, no del modelo elegido. Es el resultado central del proyecto y ahora
+tiene dos medidas independientes detrás.
+
+### Incidencia de entorno: `n_jobs=-1` en WSL2
+
+El primer `make train` tardó **4 min 43 s** en un problema que debería resolverse en segundos.
+No era el modelo, era la configuración de hilos. Medido sobre 50 árboles y 64.360 filas:
+
+| `n_jobs` | Tiempo |
+|---|---|
+| 8 | 0,15 s |
+| 12 | 0,12 s |
+| 16 | 34,3 s |
+| −1 (que resuelve a 16) | 27,9 s |
+
+La causa es el reparto de OpenMP en una CPU **heterogénea** — un Intel Core Ultra 7 255H mezcla
+núcleos de rendimiento, de eficiencia y de bajo consumo en el mismo paquete. OpenMP da a cada
+hilo la misma porción de trabajo, así que en cada barrera los núcleos rápidos esperan a los
+lentos; y con los 16 hilos ocupados no queda ninguno libre para el resto del sistema, con lo que
+la espera degenera en *spin waiting*.
+
+`n_jobs = max(1, os.cpu_count() // 2)` deja margen y es portable. `make train` pasa de 4 min 43 s
+a **11 s**, con cifras idénticas: LightGBM era lento, no incorrecto.
+
+Emparentado con D-01: es el segundo problema de este proyecto que no está en el código sino
+debajo de él.
+
+### Consecuencias
+
+- **La logística pasa a S4**: es la que se calibra, la que recibe el umbral de 0,25, la que se
+  traduce a euros y la que se lee una vez sobre test.
+- El árbol se queda en el repositorio, en `MODELS`, en la tabla y en este registro **con su
+  número**. La frase que queda escrita es "el árbol ganó 0,0045 y no compensa", no "no probamos
+  árboles".
+- **SHAP deja de ser necesario en la fase 1.** Existía para explicar un modelo de árboles; con
+  una logística, la explicación son sus coeficientes. Se mantiene la dependencia por la fase 2.
+- No se ajustan hiperparámetros. D-12 lo dijo antes de empezar: si el modelo no gana, ninguna
+  rejilla lo salva — y la curva de rondas muestra que el problema es exceso de capacidad, no
+  falta de ella.

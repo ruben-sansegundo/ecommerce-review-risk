@@ -107,6 +107,9 @@ Estas son la razón de ser del proyecto. Si una propuesta las incumple, no la ha
   del lockfile con `uv export`, no se edita a mano.
 - `libgomp1` es prerrequisito **de sistema** para LightGBM (`sudo apt-get install -y libgomp1`).
   Sin él, el fallo aparece al importar, no al instalar.
+- **Nunca `n_jobs=-1` en LightGBM aquí.** La CPU es heterogénea (núcleos P/E/LP-E) y pedir los 16
+  hilos multiplica el tiempo por 200: 50 árboles pasan de 0,15 s a 34 s. Se usa la mitad de los
+  núcleos. Ver `docs/decisiones.md` D-12.
 - pandas, scikit-learn, lightgbm, matplotlib, shap, pytest, ruff.
 - Antes de dar por hecho que una herramienta es nativa de Linux, comprobar con `command -v`:
   el PATH de WSL hereda ejecutables de Windows por interop.
