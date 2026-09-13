@@ -145,17 +145,22 @@ ecommerce-review-risk/
 │   ├── 02_signal.ipynb    # señal candidata en t₀ y t₁
 │   ├── 03_baseline.ipynb
 │   ├── 04_model.ipynb
-│   └── 05_business.ipynb
+│   └── 05_business.ipynb  # calibración, euros y análisis de sensibilidad
 ├── src/                   # paquete instalable: `from src.x import y` sin tocar sys.path
 │   ├── config.py          # rutas, SEED, tablas, parámetros de coste
 │   ├── data.py            # descarga y carga
 │   ├── features.py        # feature engineering, sin fugas
-│   ├── train.py
-│   └── evaluate.py        # métricas + umbral por coste esperado
+│   ├── train.py           # baselines y LightGBM, misma matriz y mismo medidor
+│   ├── evaluate.py        # métricas, costes por fila, bootstrap emparejado
+│   ├── calibrate.py       # sigmoide ajustada en validación
+│   └── business.py        # umbral, euros y la frontera donde deja de compensar
 ├── tests/
+│   ├── conftest.py        # matriz sintética compartida
 │   ├── test_features.py   # espina, features y no fuga de historial
 │   ├── test_evaluate.py   # métricas, costes y bootstrap
-│   └── test_train.py      # qué columnas ve cada momento, no fuga en el modelo
+│   ├── test_train.py      # qué columnas ve cada momento, no fuga en el modelo
+│   ├── test_calibrate.py  # el test no participa en la calibración
+│   └── test_business.py   # los euros, calculados a mano
 ├── models/                # artefactos entrenados; no se versionan en fase 1
 └── reports/figures/       # PNG que se incrustan en el README
 ```
@@ -183,76 +188,63 @@ una entrevista**.
 
 ## 7. Estado actual
 
-**Sesión 3 de 8 terminada — modelos, comparación y lectura del test.** Al día 2026-09-13.
+**Sesión 4 de 8 terminada — FASE 1 COMPLETA.** Al día 2026-09-13.
 
-`docs/decisiones.md` es el documento de traspaso entre sesiones: recoge las decisiones tomadas
-y su porqué. Léelo junto a este fichero y a `docs/features.md` antes de proponer nada.
+`docs/decisiones.md` es el documento de traspaso: 16 decisiones con su porqué. Léelo junto a
+este fichero y a `docs/features.md` antes de proponer nada.
 
 ### Hecho
 
-**S1 — encuadre y esqueleto** (D-01 a D-06)
+| Sesión | Alcance | Decisiones |
+|---|---|---|
+| **S1** | Estructura, entorno `uv`, descarga reproducible con manifiesto, matriz de costes | D-01 a D-06 |
+| **S2** | Población (96.636 pedidos), split temporal por régimen logístico, 27 features, prueba de no fuga | D-07 a D-09 |
+| **S3** | Historial de vendedor con doble reloj, métricas y bootstrap, baselines, LightGBM contra barra fechada, lectura única del test | D-10 a D-13 |
+| **S4** | Calibración, umbral en euros, sensibilidad y frontera de rentabilidad | D-14 a D-16 |
 
-- [x] Estructura, entorno reproducible con `uv`, `README.md`, `Makefile`
-- [x] `src/config.py` y `src/data.py`: descarga vía API de Kaggle con alternativa manual,
-      `data/manifest.json` con hash por tabla, exploración del esquema
-- [x] `docs/problema.md` y matriz de costes cerrada
-
-**S2 — población, split y features** (D-07 a D-09)
-
-- [x] `build_spine()`: 96.636 pedidos, con target y los dos momentos
-- [x] Split temporal en tres bloques, elegido por régimen logístico
-- [x] 27 features, 35 tests, `notebooks/01_eda.ipynb` y `02_signal.ipynb`
-
-**S3 — historial, baselines, modelo y test** (D-10 a D-13)
-
-- [x] Historial de vendedor con **doble reloj** y suavizado estimado por momentos:
-      5 features nuevas, `seller_neg_rate` la segunda más informativa del catálogo
-- [x] `src/evaluate.py`: PR-AUC, recall@k, lift@k, Brier, coste esperado con vector por fila,
-      umbral óptimo y **bootstrap emparejado** para poner intervalo a cada diferencia
-- [x] `src/train.py`: cuatro baselines y LightGBM, misma matriz y mismo código de medida
-- [x] Criterios de aceptación **fechados antes** de entrenar el árbol (D-12)
-- [x] Lectura única del test con todo congelado (D-13)
-- [x] 83 tests · `notebooks/03_baseline.ipynb` y `04_model.ipynb`
+102 tests. Notebooks 01 a 05. `make data | features | train | eval | test | lint`.
 
 ### Cifras vigentes
 
 | | |
 |---|---|
-| Población de análisis | 96.636 pedidos, 2017-01 a 2018-08 |
-| Entrenamiento | 2017-01 .. 2018-03 · 64.360 · 14,70% |
-| Validación | 2018-04 .. 2018-05 · 13.612 · 11,86% |
-| **Test** | 2018-06 .. 2018-08 · 18.664 · **10,19%** |
-| **Modelo de la fase 1** | **Regresión logística**, en t₀ y t₁ |
-| PR-AUC en test | **0,1802** (t₀) · **0,2281** (t₁) |
-| recall@10% en test | 21,8% (t₀) · 26,1% (t₁), frente al 9,9% del azar |
-| t₁ − t₀ en test | **+0,0480** [+0,0380, +0,0590] |
+| Test | 2018-06 .. 2018-08 · 18.664 pedidos · prevalencia **10,19%** |
+| Modelo de la fase 1 | **Regresión logística calibrada con sigmoide** |
+| PR-AUC en test | 0,1802 (t₀) · **0,2281** (t₁) |
+| recall@10% | 21,8% (t₀) · **26,1%** (t₁), frente al 9,9% del azar |
+| t₁ − t₀ | +0,0480 [+0,0380, +0,0590] |
+| Error de calibración | 7,0% → **1,7%** (t₀) · 6,9% → **2,4%** (t₁) |
+| Ahorro en el punto de operación | 23,31 €/mil pedidos (t₀) · **58,51 €/mil** (t₁) |
+| Frontera de rentabilidad | e = 0,254 (t₀) · **e = 0,230** (t₁) |
 
-### Lo que S3 dejó claro y condiciona S4
+### Lo que la fase 1 concluye
 
-- **La señal es aditiva.** Dos sondeos independientes lo confirman: trocear las variables
-  buscando curvatura empeoró (D-11), y un árbol libre de construir conjunciones no encuentra
-  interacciones que valgan 0,01 de PR-AUC y sobreajusta desde la ronda 25 (D-12). No vuelvas a
-  proponer modelos más complejos sin un argumento nuevo.
-- **Los modelos están descalibrados y hay prueba**: el Brier de la regla constante (0,0935) bate
-  al de la logística de t₀ (0,0961), porque entrenan sobre un 14,70% y puntúan un 10,19%.
-  **Es la primera tarea de S4 y sin ella no hay euros.**
-- **t₀ se degrada entre bloques y t₁ aguanta** (1,97 → 1,77 veces la tasa base frente a
-  2,17 → 2,24). La ventaja de esperar al despacho es mayor de lo que decía validación.
-- **Candidata a feature**, hallada por la logística: `seller_prior_orders` menos
-  `seller_prior_reviews`, es decir los pedidos despachados cuya reseña aún no ha llegado — un
-  vendedor en punta de volumen y todavía sin juzgar. Ahora el modelo la reconstruye restando.
+- **La señal es aditiva.** Trocear las variables empeoró (D-11) y LightGBM no encuentra
+  interacciones que valgan 0,01 de PR-AUC, sobreajustando desde la ronda 25 (D-12). No propongas
+  modelos más complejos sin un argumento nuevo: en test el árbol **pierde** contra la logística.
+- **El caso de negocio se sostiene sin holgura.** Se supuso eficacia 0,30 y el equilibrio está en
+  0,254. La conclusión del proyecto no es sobre el modelo: **antes de montar esto hay que medir
+  la eficacia real de la intervención con un A/B**, porque de ese número cuelga todo.
+- **La deriva no se detiene.** El calibrador aprende de un bloque al 11,86% y se aplica a uno al
+  10,19%; queda un sesgo residual que no se toca porque recalibrar sobre test sería trampa.
+- Una semilla fija **no basta** en un modelo multihilo: hace falta `deterministic=True`.
 
-### Siguiente: S4
+### Siguiente: S5 — hay que elegir, y la elección es de Rubén
 
-1. **Calibración sobre validación.** Curva de calibración y Brier antes y después, en t₀ y t₁.
-   Sin esto, todo lo demás de la sesión es ficción (regla 8).
-2. **Umbral por coste esperado** (0,25, D-04) aplicado sobre las probabilidades calibradas, y
-   comparación con el umbral empíricamente óptimo: la distancia entre ambos mide lo que queda
-   de descalibración.
-3. **Traducción a euros** y `notebooks/05_business.ipynb`, con la asimetría t₀/t₁ del final de
-   D-04 (en t₀ hay más palancas, así que la eficacia real probablemente sea mayor).
-4. **Análisis de sensibilidad** de D-04: `C_neg` 15-80 €, `e` 0,15-0,50, `c_int` 1-8 €. La
-   salida que importa es **la frontera donde el proyecto deja de compensar**.
+La fase 1 está cerrada y las tres continuaciones son legítimas. Por orden de lo que más añade a
+una candidatura:
+
+1. **Fase 2, NLP sobre las reseñas.** Es lo que más diferencia el portfolio y lo que la hoja de
+   ruta pone como siguiente. Las reseñas en portugués siguen intactas en el pipeline.
+2. **Fase 3, servicio.** FastAPI + contenedor + demo pública. Un enlace que un reclutador puede
+   pulsar vale mucho, y el modelo que se serviría es un vector de coeficientes más un calibrador
+   de dos parámetros: trivial de desplegar.
+3. **Rematar la fase 1.** Queda la feature candidata que encontró la logística —
+   `seller_prior_orders` menos `seller_prior_reviews`, el atasco del vendedor sin juzgar — y
+   subir la precisión compra margen frente al supuesto de eficacia (del 32,6% al 40% bajaría el
+   equilibrio del 23,0% al 18,8%). **Ojo:** el test ya se ha leído dos veces; tocar features
+   obliga a decidir explícitamente cuántas lecturas más se permite el proyecto y a decirlo en el
+   registro.
 
 ### Cómo trabaja Rubén
 

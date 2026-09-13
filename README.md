@@ -3,8 +3,8 @@
 Predicting which e-commerce orders will end in a 1–2 star review, early enough to act on it.
 Temporal validation, cost-optimized threshold, estimated impact in euros.
 
-> **Status:** Phase 1 in progress — models trained, validated and read once on a held-out
-> test block. Calibration and the euro figures are next.
+> **Status:** Phase 1 complete — temporal validation, a model chosen against a pre-registered
+> bar, calibrated probabilities, and a cost case with the boundary where it stops paying.
 
 ---
 
@@ -102,6 +102,79 @@ than the t₀ logistic (0.0961): a model trained at a 14.70% base rate systemati
 on a 10.19% block. Ranking well and being right about the probability are different things, which
 is why no euro figure appears above. Calibration is the first task of the next session.
 
+## The business case
+
+Euros come from multiplying a probability by a cost, so the probabilities are corrected first.
+A sigmoid calibrator fitted on validation — never on training, where the model has already seen
+the labels — brings predicted risk from 17.2% down to 11.5% on a block whose real rate is 10.2%.
+
+![Calibration curves before and after, at t0 and t1](reports/figures/calibration.png)
+
+Before calibration the constant rule scored a *better* Brier than the t₀ model. After it, both
+models beat it. A residual bias is left in place on purpose: the calibrator learns an 11.86%
+block and is applied to a 10.19% one, because the drift does not stop. That is a monitoring
+problem, not a calibration one.
+
+### Blanket intervention destroys value
+
+Acting costs €3 per order and saves €12 on the ones that would have gone wrong — 10.19% of them.
+Intervening on everybody loses **€33,180** on the test block. That number, not any metric, is
+what the model exists to fix.
+
+### Acting above the threshold
+
+`p* = c_int / (e · C_neg)` = **0.25**, derived from the cost ratio before any outcome was seen.
+
+| Moment | Flagged | Precision | Recall | Saved | Per 1,000 orders |
+|---|---|---|---|---|---|
+| t₀ | 799 (4.3%) | 29.5% | 12.4% | €435 | €23.31 |
+| t₁ | 1,204 (6.5%) | 32.6% | 20.6% | €1,092 | €58.51 |
+
+t₁ saves 2.5× what t₀ saves — roughly €4,400 a year against €1,700 at this volume. That is little
+money, and the honest framing matters more than the figure: it scales linearly with volume and
+with `C_neg`, and the policy is deliberately narrow, since only 4–6% of orders clear the bar.
+
+![Savings against threshold, and the effectiveness at which the policy stops paying](reports/figures/business_case.png)
+
+### Where it stops paying
+
+Re-derive the threshold when an assumption changes and the policy cannot lose money — it just
+raises the bar until nothing clears it. At `C_neg` = €15 and 15% effectiveness it flags no orders
+at all: the programme does not fail, it disappears.
+
+The realistic failure is keeping the threshold while reality differs. Savings are then linear in
+effectiveness and cross zero at `e* = c_int / (C_neg × precision)` — a frontier independent of
+block size and base rate.
+
+| Moment | Precision | Stops paying below |
+|---|---|---|
+| t₀ | 29.5% | e = **0.254**, or `C_neg` = €33.9, or `c_int` above €3.54 |
+| t₁ | 32.6% | e = **0.230**, or `C_neg` = €30.7, or `c_int` above €3.91 |
+
+**0.30 was assumed, and t₀ breaks even at 0.254.** The case holds, and it holds narrowly — which
+is structural, not a defect: the threshold sits exactly at break-even, so the marginal flagged
+order contributes nothing by construction.
+
+Which points somewhere that is not the model:
+
+> Before building this for real, **measure the effectiveness of the intervention** with a
+> controlled experiment. An A/B over a few thousand flagged orders answers the one question
+> everything rests on, and no improvement in PR-AUC substitutes for it.
+
+And it gives the honest reason to keep improving the model: raising precision at the operating
+point from 32.6% to 40% moves the break-even from 23.0% to **18.8%**. That is buying margin
+against an assumption nobody has measured — a claim an operations director can act on, in a way
+a PR-AUC cannot be.
+
+### One more finding, from t₀ versus t₁
+
+The fixed cost matrix compares the two moments on information alone, which is the right way to
+measure and the wrong way to decide: at t₀ nothing has moved and there are real levers, while at
+t₁ only goodwill is left. Holding t₁ at 0.30 and letting t₀ be more effective, the two cross at
+about **0.44** — t₁'s signal advantage of +0.048 PR-AUC is cancelled if intervening at approval
+is some 14 points more effective than intervening after dispatch. Whether it is, this dataset
+cannot say.
+
 ## Methodological commitments
 
 These are deliberate constraints, not defaults. They are what the project is actually about.
@@ -141,6 +214,9 @@ Acting on an order with probability `p` of a negative review pays off when
 `p > c_int / (e · C_neg)`, which gives a threshold of **0.25** against a measured base rate
 of 13.4% — acting on the segment carrying roughly 1.9x the baseline risk.
 Note that the threshold depends only on the *ratio*, not on the absolute levels.
+
+What these assumptions turn into, and how much of it survives changing them, is in
+[The business case](#the-business-case) above.
 
 Full reasoning, decomposition and sensitivity plan: [`docs/decisiones.md`](docs/decisiones.md)
 (in Spanish).
@@ -217,7 +293,7 @@ Notebooks tell the story; `src/` is what runs. No business logic lives only in a
 
 | Phase | Scope | Status |
 |---|---|---|
-| 1 | Tabular risk: t₀ vs t₁, calibration, euro impact, reproducible repo | In progress |
+| 1 | Tabular risk: t₀ vs t₁, calibration, euro impact, reproducible repo | **Complete** |
 | 2 | NLP on review text: complaint reason, embeddings, aspect extraction with an LLM vs a classical classifier, with cost and latency measured | Planned |
 | 3 | Serving: FastAPI, container, public Streamlit demo | Planned |
 | 4 | Operations: month-to-month drift, retraining, MLflow | Planned |
