@@ -1349,6 +1349,21 @@ manera de responderla con este dataset. Lo que sí puede hacer es poner el núme
 porque al mover la eficacia se mueve el umbral, y el conjunto de pedidos marcados cambia a
 saltos. No es ruido de estimación: es que la función es escalonada.
 
+### Apunte de reproducibilidad, encontrado aquí
+
+Un test del bloque anterior empezó a fallar de forma intermitente: `lightgbm_rounds()` devolvía
+a veces un número de árboles distinto con los mismos datos y la misma semilla. **Una semilla fija
+no basta.** Los histogramas se suman entre hilos, la suma en coma flotante no es asociativa, y
+dos ejecuciones del mismo código pueden partir por sitios distintos y parar en rondas distintas.
+
+Sobre los datos reales no se manifestaba —69 rondas y 0,238708 en cuatro intentos seguidos, así
+que **ninguna cifra publicada de S3 cambia**—, pero sí sobre la matriz sintética de 600 filas de
+los tests, donde muchas iteraciones empatan y el criterio de parada salta entre ellas.
+
+Se añaden `deterministic=True` y `force_row_wise=True` (su prerrequisito, y la elección correcta
+de todos modos con 64.360 filas frente a 32 columnas). La regla 9 pide semillas fijas; en un
+modelo multihilo eso es condición necesaria y no suficiente.
+
 ### Consecuencias
 
 - `src/business.py`, la capa que nadie importa, cierra el orden de dependencias:

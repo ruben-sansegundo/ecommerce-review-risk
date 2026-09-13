@@ -57,6 +57,14 @@ LGBM_PARAMS = {
     "subsample_freq": 1,
     "n_estimators": 3000,
     "random_state": config.SEED,
+    # A fixed seed is not enough for reproducibility here. Histograms are summed
+    # across threads, and floating point addition is not associative, so two runs
+    # of the same code can split differently and early stopping can land on a
+    # different number of trees. Rule 9 asks for more than a seed, so ask
+    # LightGBM for the guarantee - force_row_wise is its precondition, and it is
+    # the right choice anyway with 64,360 rows against 32 features.
+    "deterministic": True,
+    "force_row_wise": True,
     # Never -1. This CPU is heterogeneous - performance, efficiency and
     # low-power cores in one package - and OpenMP hands every thread an equal
     # share, so at each barrier the fast cores sit waiting for the slow ones.
