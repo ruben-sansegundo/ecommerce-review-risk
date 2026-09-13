@@ -1177,3 +1177,183 @@ euros sería ficción.** Es la primera tarea de S4.
 - `reports/figures/t0_vs_t1_test.png` es la figura de cabecera del README.
 - **El test no se vuelve a leer en S4** salvo para la traducción a euros del modelo ya
   calibrado, y esa calibración se ajusta sobre validación.
+
+---
+
+## D-14 · Calibración: sigmoide, ajustada en validación
+
+**Fecha:** 2026-09-13 (S4)
+
+### Contexto
+
+D-13 dejó la descalibración demostrada y no sospechada: sobre test, el Brier de la regla
+constante (0,0935) batía al de la logística de t₀ (0,0961). Un modelo que ordena casi el doble
+de bien que el azar perdía en error cuadrático, porque aprende una tasa base del 14,70% y
+puntúa un bloque del 10,19%. Medido después: el modelo crudo llamaba **17,2% de riesgo** a un
+bloque cuya tasa real es 10,2%. Sobreestimaba en dos tercios.
+
+Sin arreglar eso, la regla 8 de `CLAUDE.md` prohíbe seguir: cualquier cifra en euros sería
+ficción, porque el cálculo multiplica una probabilidad por un coste.
+
+### Decisión
+
+**El calibrador se ajusta sobre validación, nunca sobre entrenamiento.**
+
+*Razón:* un modelo calibrado con los datos que usó para ajustarse parece perfectamente
+calibrado por construcción — ya ha visto esas etiquetas. La curva de fiabilidad saldría recta
+y no significaría nada.
+
+**El método se elige sobre una mitad de validación que ningún calibrador vio: abril ajusta,
+mayo juzga.** Con el ganador decidido, se reajusta sobre validación entera.
+
+*Razón:* elegir entre sigmoide e isotónica mirando el bloque completo sería escoger el método
+con el mismo bloque que después lo califica. Es el atajo que el proyecto ha rechazado en todas
+las decisiones anteriores. Abril y mayo comparten régimen logístico (D-08), así que la
+comparación no está confundida por que uno de los dos sea una crisis.
+
+**Gana la sigmoide (Platt): una regresión logística sobre los log-odds del propio modelo.**
+
+Medido sobre mayo, en t₀:
+
+| Método | Brier | Error de calibración | PR-AUC |
+|---|---|---|---|
+| sin calibrar | 0,0996 | 6,43% | 0,22483 |
+| **sigmoide** | **0,0950** | **1,34%** | **0,22483** |
+| isotónica | 0,0952 | 1,73% | 0,21318 |
+
+*Razón, y no es el Brier:* las dos calibran parecido. La diferencia está en el PR-AUC. **La
+sigmoide es estrictamente creciente, así que no mueve ningún orden y el PR-AUC sale idéntico al
+quinto decimal.** La isotónica es monótona pero escalonada: aplasta rangos enteros de
+puntuaciones sobre un mismo valor, y esos empates cuestan **0,012 de PR-AUC en t₀ y 0,015 en
+t₁**. En una aplicación donde se actúa sobre la cabeza del ranking, los empates no salen gratis.
+
+Además, dos parámetros no pueden memorizar 1.614 positivos, y la descalibración medida es un
+desplazamiento de tasa base — exactamente lo que corrige el intercepto de una sigmoide.
+
+**Los calibradores se escriben a mano, no se toma `CalibratedClassifierCV`.** Son quince líneas
+explicables en una entrevista, y la clase de sklearn reajusta el modelo base por dentro y tiene
+su modo `prefit` en transición de API en la versión 1.9.
+
+### Resultado sobre test, que no participó en nada de esto
+
+| Momento | | media predicha | observado | Brier | Error calib. | PR-AUC |
+|---|---|---|---|---|---|---|
+| t₀ | crudo | 0,1721 | 0,1019 | 0,0962 | 7,03% | 0,18016 |
+| t₀ | **calibrado** | **0,1155** | 0,1019 | **0,0897** | **1,73%** | 0,18016 |
+| t₁ | crudo | 0,1707 | 0,1019 | 0,0932 | 6,88% | 0,22815 |
+| t₁ | **calibrado** | **0,1217** | 0,1019 | **0,0874** | **2,36%** | 0,22815 |
+
+**Los dos modelos calibrados baten ahora a la regla constante en Brier**, cosa que ninguno hacía
+antes. El bucle que abrió D-13 queda cerrado.
+
+### El residuo que queda, y por qué no se toca
+
+Sigue habiendo sesgo: 0,1155 predicho contra 0,1019 observado en t₀. El calibrador aprende de
+validación (11,86%) y se aplica a test (10,19%), **porque la deriva no se detiene**. Recalibrar
+sobre test lo eliminaría y sería exactamente la trampa que este proyecto evita.
+
+Es un problema de vigilancia, no de calibración, y pertenece a la fase 4: en producción el
+calibrador se reajustaría con los meses más recientes según llegan las etiquetas — con el mismo
+doble reloj de D-10, porque la reseña tarda una mediana de 10 días.
+
+### Consecuencias
+
+- `src/calibrate.py` es un módulo nuevo. Orden de dependencias:
+  `config < features < evaluate < train < calibrate`.
+- Se añade `calibration_error()`: el hueco medio entre predicho y observado por tramos,
+  ponderado por tamaño. El Brier mezcla calibración con capacidad de separar; esta métrica
+  aísla la mitad que aquí importa.
+- Los tramos son de **igual número de pedidos**, no de igual anchura: las predicciones se
+  amontonan en la zona baja y con tramos uniformes el primero se llevaría casi todo.
+- Nueve tests, incluido uno estructural que voltea todas las etiquetas de test y exige que el
+  calibrador no se mueva ni un dígito.
+
+---
+
+## D-15 · El umbral en euros: qué se marca, qué se evita, qué se ahorra
+
+**Fecha:** 2026-09-13 (S4)
+
+### Contexto
+
+Con probabilidades calibradas ya se puede aplicar el umbral de D-04 —`p* = c_int / (e · C_neg)`
+= **0,25**— y responder en el idioma de operaciones. Todos los costes de abajo son los
+**supuestos** de D-04, no medidas: 3 € intervenir, 40 € una reseña negativa, eficacia 0,30.
+
+### La primera cifra: sin modelo, la intervención destruye valor
+
+Sobre el bloque de test, intervenir en **todos** los pedidos pierde **33.180 €**.
+
+La aritmética es de una línea: actuar cuesta 3 € por pedido y evita 12 € (0,30 × 40 €) solo en
+los que iban a acabar mal, que son el 10,19%. Eso es 1,22 € de beneficio esperado contra 3 € de
+coste. **La intervención masiva no es cara: es directamente ruinosa.** Esa es la razón de que
+exista el modelo, y conviene decirla con número antes que con adjetivos.
+
+### El punto de operación, sobre test
+
+| Momento | Marcados | % | Precisión | Recall | Ahorro | Por 1.000 pedidos |
+|---|---|---|---|---|---|---|
+| t₀ | 799 | 4,3% | 29,5% | 12,4% | **435 €** | 23,31 € |
+| t₁ | 1.204 | 6,5% | 32,6% | 20,6% | **1.092 €** | 58,51 € |
+
+**t₁ ahorra 2,5 veces lo que ahorra t₀.** Y la política es muy selectiva: con estos costes solo
+se actúa sobre el 4-6% de los pedidos, lo que explica que el recall sea bajo — no se está
+intentando capturar todas las reseñas negativas, sino solo aquellas en las que actuar sale a
+cuenta.
+
+**Honestidad sobre la escala.** A este volumen —18.664 pedidos en tres meses, unos 74.700 al
+año— son del orden de **1.700 €/año en t₀ y 4.400 €/año en t₁**. Es poco dinero, y decirlo es
+parte del trabajo. Las cifras escalan linealmente con el volumen y con `C_neg`, y los supuestos
+elegidos son deliberadamente conservadores; D-16 mide cuánto cambia todo esto.
+
+### El umbral fijo contra la sabiduría a posteriori
+
+| Momento | Bloque | Umbral fijo | Ahorro | Umbral óptimo | Ahorro óptimo | Diferencia |
+|---|---|---|---|---|---|---|
+| t₀ | val | 0,25 | 753 € | 0,231 | 858 € | 105 € |
+| t₀ | test | 0,25 | 435 € | 0,280 | 531 € | 96 € |
+| t₁ | val | 0,25 | 1.221 € | 0,246 | 1.257 € | 36 € |
+| t₁ | test | 0,25 | 1.092 € | 0,326 | 1.323 € | 231 € |
+
+Los óptimos empíricos caen entre 0,23 y 0,33, alrededor del 0,25 teórico. **Eso es una
+comprobación de la calibración, no una oportunidad perdida**: un modelo perfectamente calibrado
+pone su óptimo exactamente en `c_int / (e · C_neg)`, así que la distancia mide el residuo de
+descalibración que D-14 dejó documentado. El umbral que se usa sigue siendo el fijo, elegido
+antes de ver ningún resultado.
+
+### La pregunta que D-04 dejó pendiente: ¿y si intervenir en t₀ funciona mejor?
+
+La matriz de costes es la misma en los dos momentos **a propósito**, para que la comparación
+mida solo el valor de la información. Pero para decidir qué hacer, eso es incompleto: en t₀ el
+pedido no se ha movido y quedan palancas reales —reencaminar, cambiar transportista, avisar al
+vendedor—, mientras que en t₁ el paquete ya viaja y solo queda comunicación y buena voluntad.
+
+Manteniendo t₁ en 0,30 y dejando que t₀ sea más eficaz (el umbral se mueve con la eficacia,
+porque `c_int / (e · C_neg)` lo exige):
+
+| Eficacia en t₀ | Umbral | Ahorro t₀ | Ahorro t₁ (0,30) | Diferencia |
+|---|---|---|---|---|
+| 0,30 | 0,25 | 435 € | 1.092 € | −657 € |
+| 0,40 | 0,19 | 894 € | 1.092 € | −198 € |
+| **0,44** | **0,17** | **1.145 €** | 1.092 € | **+53 €** |
+| 0,50 | 0,15 | 1.918 € | 1.092 € | +826 € |
+
+**El cruce está en torno a una eficacia del 0,44 en t₀.** Dicho en una frase defendible: *la
+ventaja de señal de t₁ —+0,048 de PR-AUC— queda compensada si intervenir al aprobar el pedido
+es unos 14 puntos más eficaz que hacerlo cuando ya ha salido.*
+
+Si eso es plausible o no es una pregunta de operaciones, no de datos, y el proyecto no tiene
+manera de responderla con este dataset. Lo que sí puede hacer es poner el número sobre la mesa.
+
+*Detalle técnico que no se esconde:* la curva no es monótona (0,42 da 1.052 € y 0,43 da 1.036 €)
+porque al mover la eficacia se mueve el umbral, y el conjunto de pedidos marcados cambia a
+saltos. No es ruido de estimación: es que la función es escalonada.
+
+### Consecuencias
+
+- `src/business.py`, la capa que nadie importa, cierra el orden de dependencias:
+  `... < train < calibrate < business`.
+- Todas las cifras se reportan también **por cada 1.000 pedidos**, para que un bloque de tres
+  meses y un año de operación se comparen sin recordar el tamaño de cada uno.
+- Siete tests con los euros calculados a mano, incluido el de que la intervención masiva pierde
+  dinero: es la afirmación que justifica el proyecto entero.
