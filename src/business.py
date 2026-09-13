@@ -192,3 +192,72 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
+
+
+def break_even(
+    y_true,
+    p,
+    costs: config.CostParams = config.DEFAULT_COSTS,
+    threshold: float | None = None,
+) -> dict:
+    """How wrong the assumptions can be before the programme destroys value.
+
+    Two different questions hide behind "what if the costs are wrong", and only
+    one of them has an interesting answer.
+
+    Re-derive the threshold whenever an assumption changes and the policy can
+    never lose: acting only where c_int < e * p * C_neg is profitable by
+    construction. A pessimistic assumption does not cost money, it shrinks the
+    programme until it stops firing at all.
+
+    The dangerous case is the realistic one - the threshold was set believing
+    e = 0.30 and reality is lower, so orders keep being flagged that no longer
+    pay for themselves. With the acting set fixed, savings are linear in e:
+
+        savings(e) = caught * e * C_neg - flagged * c_int
+
+    which crosses zero at e = c_int / (C_neg * precision). The break-even
+    depends on nothing but the cost ratio and the precision the model actually
+    reaches - not on the size of the block, not on the base rate.
+    """
+    y = np.asarray(y_true).astype(bool)
+    cutoff = costs.threshold if threshold is None else threshold
+    acted = np.asarray(p, dtype=float) >= cutoff
+
+    if not acted.any():
+        return {"precision": float("nan"), "effectiveness": float("nan"), "c_neg": float("nan")}
+
+    precision = float(y[acted].mean())
+    return {
+        "threshold": float(cutoff),
+        "flagged": int(acted.sum()),
+        "precision": precision,
+        # Solve for each assumption in turn, holding the other two as they stand.
+        "effectiveness": costs.c_int / (costs.c_neg * precision),
+        "c_neg": costs.c_int / (costs.effectiveness * precision),
+        "c_int": costs.effectiveness * costs.c_neg * precision,
+    }
+
+
+def sensitivity(
+    matrix: pd.DataFrame | None = None,
+    block: str = "test",
+    moment: str = "t1",
+    c_int_values=(1.0, 3.0, 5.0, 8.0),
+    c_neg_values=(15.0, 25.0, 40.0, 60.0, 80.0),
+    effectiveness_values=(0.15, 0.20, 0.30, 0.40, 0.50),
+) -> pd.DataFrame:
+    """The ranges D-04 committed to, with the threshold re-derived each time.
+
+    Adds the share of orders the policy would touch, because that is what the
+    euro figure hides: a pessimistic assumption does not turn the savings
+    negative, it raises the threshold until almost nothing clears it.
+    """
+    matrix = features.load_features() if matrix is None else matrix
+    y = matrix.loc[matrix["split"] == block, "y"].to_numpy()
+    scores = calibrated_by_moment(matrix, block)[moment]
+
+    grid = evaluate.sensitivity_grid(y, scores, c_int_values, c_neg_values, effectiveness_values)
+    grid["flagged_share"] = [float((scores >= t).mean()) for t in grid["threshold"].to_numpy()]
+    grid["savings_per_1000_orders"] = grid["net_savings"] / len(y) * 1000
+    return grid

@@ -5,11 +5,13 @@ worked out by hand in the test. That matters more here than anywhere else in
 the project: these are the numbers that would be quoted in a meeting.
 """
 
+from dataclasses import replace
+
 import numpy as np
 import pytest
 from conftest import synthetic_matrix
 
-from src import business, config
+from src import business, config, evaluate
 
 # Ten orders, three of which end in a negative review, scored perfectly.
 Y = np.array([1, 1, 1, 0, 0, 0, 0, 0, 0, 0], dtype=bool)
@@ -83,3 +85,42 @@ def test_the_operating_point_is_reported_for_both_moments():
 
     assert table["moment"].to_list() == ["t0", "t1"]
     assert (table["threshold"] == config.DEFAULT_COSTS.threshold).all()
+
+
+def test_the_break_even_is_where_the_savings_really_cross_zero():
+    """The closed form against brute force.
+
+    e = c_int / (C_neg * precision) is derived by hand in the docstring; this
+    checks the derivation against the arithmetic it claims to summarise.
+    """
+    rng = np.random.default_rng(config.SEED)
+    truth = rng.beta(2, 10, size=5000)
+    y = rng.uniform(size=5000) < truth
+
+    crossing = business.break_even(y, truth)["effectiveness"]
+    costs = replace(config.DEFAULT_COSTS, effectiveness=crossing)
+
+    # At the crossing the policy is worth nothing - but the acting set stays the
+    # one the standing threshold chose, which is the whole point of the question.
+    savings = evaluate.net_savings(y, truth, config.DEFAULT_COSTS.threshold, costs)
+    assert savings == pytest.approx(0.0, abs=1e-6)
+
+
+def test_a_sharper_model_survives_worse_assumptions():
+    """Break-even depends on precision and on nothing else about the block."""
+    rng = np.random.default_rng(config.SEED)
+    y = rng.uniform(size=4000) < 0.12
+    sharp = np.where(y, 0.9, np.where(rng.uniform(size=4000) < 0.1, 0.9, 0.01))
+    blunt = np.where(rng.uniform(size=4000) < 0.5, 0.9, 0.01)
+
+    assert (
+        business.break_even(y, sharp)["effectiveness"]
+        < (business.break_even(y, blunt)["effectiveness"])
+    )
+
+
+def test_break_even_is_undefined_when_nothing_is_flagged():
+    report = business.break_even(Y, np.zeros(len(Y)))
+
+    assert np.isnan(report["effectiveness"])
+    assert np.isnan(report["precision"])

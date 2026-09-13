@@ -1372,3 +1372,102 @@ modelo multihilo eso es condición necesaria y no suficiente.
   meses y un año de operación se comparen sin recordar el tamaño de cada uno.
 - Siete tests con los euros calculados a mano, incluido el de que la intervención masiva pierde
   dinero: es la afirmación que justifica el proyecto entero.
+
+---
+
+## D-16 · Sensibilidad: hasta dónde aguanta la conclusión
+
+**Fecha:** 2026-09-13 (S4)
+
+### Contexto
+
+D-04 fijó tres supuestos inventados —3 €, 40 €, eficacia 0,30— y se comprometió a medir cuánto
+depende el resultado de cada uno. La salida que prometió no era el ahorro, sino **la frontera
+donde el proyecto deja de compensar**.
+
+Al construirlo aparece una distinción que cambia qué hay que medir: hay **dos preguntas
+distintas** escondidas en "¿y si los costes están mal?".
+
+### Pregunta 1 · Si recalculas el umbral con cada supuesto, no pierdes: te quedas sin programa
+
+Si al cambiar la eficacia recalculas `p* = c_int / (e · C_neg)`, solo actúas donde compensa
+**según ese supuesto**. El ahorro no se vuelve negativo, se encoge. Sobre t₁, por cada 1.000
+pedidos de test:
+
+| `C_neg` \ `e` | 0,15 | 0,20 | 0,30 | 0,40 | 0,50 |
+|---|---|---|---|---|---|
+| 15 € | 0,0 | 0,0 | −0,6 | 2,6 | 13,0 |
+| 25 € | −0,4 | −0,1 | 13,0 | 34,2 | 62,8 |
+| **40 €** | 2,6 | 16,2 | **58,5** | 108,9 | 163,4 |
+| 60 € | 25,2 | 58,5 | 127,9 | 285,3 | 588,1 |
+| 80 € | 58,5 | 108,9 | 285,3 | 698,4 | 1.214,4 |
+
+Y la fracción de pedidos sobre la que se actúa, que es lo que el euro esconde:
+
+| `C_neg` \ `e` | 0,15 | 0,20 | 0,30 | 0,40 | 0,50 |
+|---|---|---|---|---|---|
+| 15 € | 0,0% | 0,0% | 0,3% | 0,9% | 2,0% |
+| **40 €** | 0,9% | 2,4% | **6,5%** | 13,2% | 21,7% |
+| 80 € | 6,5% | 13,2% | 32,1% | 52,8% | 70,2% |
+
+**Un supuesto pesimista no hace perder dinero: sube el umbral hasta que casi nada lo supera.**
+Con `C_neg = 15 €` y eficacia 0,15, el modelo no marca ni un pedido. El programa no fracasa,
+desaparece.
+
+*Los ceros negativos merecen explicación.* Con umbral adaptativo el ahorro **no debería** poder
+ser negativo: solo se actúa donde el beneficio esperado supera al coste. Que aparezca −0,6 € es
+el residuo de descalibración que D-14 dejó documentado — los pedidos que superan un umbral alto
+no tienen realmente la probabilidad que el modelo les asigna. La magnitud es despreciable; el
+que aparezca, no: es la prueba de que la calibración sigue siendo el eslabón del que cuelga todo
+el cálculo.
+
+### Pregunta 2 · Si mantienes el umbral y la realidad es otra, sí pierdes
+
+Este es el caso realista. Fijaste `p* = 0,25` creyendo que la eficacia era 0,30, y resulta que
+es 0,15: sigues marcando los mismos pedidos, pero ya no compensan. Con el conjunto de marcados
+fijo, el ahorro es lineal en la eficacia:
+
+```
+ahorro(e) = capturados · e · C_neg − marcados · c_int
+```
+
+que cruza cero en **`e* = c_int / (C_neg · precisión)`**. La frontera **no depende del tamaño
+del bloque ni de la tasa base**: solo del ratio de costes y de la precisión que el modelo
+alcanza en su punto de operación.
+
+| Momento | Precisión | Deja de compensar si |
+|---|---|---|
+| t₀ | 29,54% | `e` < **0,254** · `C_neg` < 33,9 € · `c_int` > 3,54 € |
+| t₁ | 32,56% | `e` < **0,230** · `C_neg` < 30,7 € · `c_int` > 3,91 € |
+
+### El margen es estrecho, y eso hay que decirlo
+
+Se supuso una eficacia de 0,30 y el equilibrio en t₀ está en 0,254. **El supuesto solo puede ser
+un 15% demasiado optimista antes de que el programa destruya valor.** En t₁ hay algo más de
+aire: un 23%.
+
+Y es **estructural, no un defecto del modelo**. El umbral se fija exactamente en el punto de
+equilibrio, así que el pedido marginal aporta cero por definición y todo el beneficio sale de
+los pedidos que están holgadamente por encima. Un error en los supuestos se come ese margen
+deprisa.
+
+La lectura defendible, y es la conclusión de la fase 1:
+
+> Con los supuestos de D-04, el caso se sostiene pero sin holgura. **Antes de montar esto en
+> producción, lo que hay que medir no es el modelo: es la eficacia real de la intervención**, con
+> un experimento controlado. Un A/B sobre unos miles de pedidos marcados responde a la única
+> pregunta de la que depende todo, y ninguna mejora del PR-AUC la sustituye.
+
+Dicho al revés: **subir la precisión del 32,6% al 40% bajaría el equilibrio del 23,0% al 18,8%**.
+Eso sí es una razón para seguir trabajando en el modelo — no "tener mejor PR-AUC", sino comprar
+margen frente a un supuesto que nadie ha medido.
+
+### Consecuencias
+
+- `business.break_even()` devuelve la frontera de cada uno de los tres parámetros, despejando
+  uno y dejando los otros dos como están.
+- `business.sensitivity()` acompaña cada celda de ahorro con **la fracción de pedidos marcada**,
+  porque una cifra de ahorro pequeña puede significar dos cosas muy distintas — un programa que
+  funciona mal o un programa que no se ejecuta — y el euro solo no las distingue.
+- Tres tests más, incluido el que contrasta la fórmula cerrada contra la aritmética por fuerza
+  bruta: una derivación en un docstring que nadie comprueba es un comentario, no una garantía.
