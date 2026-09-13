@@ -3,8 +3,8 @@
 Predicting which e-commerce orders will end in a 1–2 star review, early enough to act on it.
 Temporal validation, cost-optimized threshold, estimated impact in euros.
 
-> **Status:** Phase 1 in progress — project scaffolding and data pipeline.
-> No modelling results yet. This notice is removed once there are numbers to report.
+> **Status:** Phase 1 in progress — models trained, validated and read once on a held-out
+> test block. Calibration and the euro figures are next.
 
 ---
 
@@ -58,6 +58,49 @@ while validation and test share a calm regime so a threshold calibrated on one t
 other. Test prevalence is **10.19%**, and every test metric is read against that figure rather
 than the overall 13.4%. Full analysis in [`notebooks/01_eda.ipynb`](notebooks/01_eda.ipynb);
 reasoning in [`docs/decisiones.md`](docs/decisiones.md) D-08.
+
+## Results
+
+Read once on the test block — 18,664 orders from 2018-06 to 2018-08, base rate **10.19%** —
+after every choice had been frozen on validation.
+
+![Precision-recall and capture rate at t0 versus t1 on the test block](reports/figures/t0_vs_t1_test.png)
+
+| Model | Moment | PR-AUC | recall@10% | lift@10% |
+|---|---|---|---|---|
+| **Logistic regression** | **t₀** | **0.1802** | 21.8% | 2.18× |
+| LightGBM | t₀ | 0.1626 | 20.0% | 2.00× |
+| Best single feature | t₀ | 0.1277 | 14.2% | 1.42× |
+| Constant rule (the floor) | t₀ | 0.1019 | 9.9% | 0.99× |
+| **Logistic regression** | **t₁** | **0.2281** | 26.1% | 2.61× |
+| LightGBM | t₁ | 0.2092 | 24.6% | 2.46× |
+| Best single feature | t₁ | 0.1624 | 19.8% | 1.98× |
+
+**Acting on the 10% of orders the model ranks riskiest catches 21.8% of the negative reviews at
+approval, and 26.1% once the parcel has been handed to the carrier — against 9.9% for acting at
+random.** The handover is worth **+0.048 PR-AUC** [+0.038, +0.059], and that gap is *twice* what
+validation suggested: normalised by each block's base rate, t₀ decays from 1.97× to 1.77× while
+t₁ holds at 2.24×. Signal about how this particular shipment is behaving travels between periods
+better than signal about what kind of order it is.
+
+### Three findings worth more than the metrics
+
+**The complex model lost, and the rule that said so was written first.** The bar LightGBM had to
+clear was fixed in [D-12](docs/decisiones.md) *before it was trained*: higher PR-AUC, a bootstrap
+interval excluding zero, and a gap large enough to matter operationally. It cleared the first and
+failed the rest. On the test block it then lost outright, −0.018 PR-AUC [−0.032, −0.007]. Had the
+rule been "whichever scores higher on validation", this project would have shipped the worse
+model.
+
+**The signal is additive, and that took two attempts to establish.** Cutting the features into
+deciles to let a linear model bend cost 0.035–0.046 PR-AUC. A tree free to build any conjunction
+it likes found nothing worth 0.01, and overfits from round 25 on. Neither curvature nor
+interactions were hiding here.
+
+**The models are miscalibrated, with proof.** The constant rule scores a better Brier (0.0935)
+than the t₀ logistic (0.0961): a model trained at a 14.70% base rate systematically over-predicts
+on a 10.19% block. Ranking well and being right about the probability are different things, which
+is why no euro figure appears above. Calibration is the first task of the next session.
 
 ## Methodological commitments
 

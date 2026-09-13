@@ -335,12 +335,22 @@ def sensitivity_grid(
 
 
 def main() -> None:
-    """Run with `make eval` or `python -m src.evaluate`."""
-    raise SystemExit(
-        "src.evaluate holds the metrics; it has no models to score yet.\n"
-        "Train them first (make train), then this entry point prints the "
-        "comparison table."
-    )
+    """The final read of the test block. Run with `make eval`.
+
+    Imported here rather than at the top because src.train imports this module:
+    the metrics cannot depend on the models, or neither would load.
+    """
+    from src import train
+
+    table = train.model_table("test")
+    shown = ["model", "moment", "prevalence", "pr_auc", "recall@10%", "lift@10%", "brier"]
+
+    print("THE FINAL READ - test block, 2018-06 .. 2018-08\n")
+    print("Every choice was frozen on validation before this ran: features, models,")
+    print("the number of trees, and which model ships. Nothing below selects anything.")
+    print("Base rate here is 10.19%, against 11.86% on validation - the metrics are")
+    print("not comparable across blocks without it.\n")
+    print(table[shown].to_string(index=False, float_format=lambda v: f"{v:.4f}"))
 
 
 if __name__ == "__main__":

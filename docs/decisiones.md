@@ -1082,3 +1082,98 @@ debajo de él.
 - No se ajustan hiperparámetros. D-12 lo dijo antes de empezar: si el modelo no gana, ninguna
   rejilla lo salva — y la curva de rondas muestra que el problema es exceso de capacidad, no
   falta de ella.
+
+---
+
+## D-13 · La lectura final del test
+
+**Fecha:** 2026-09-13 (S3)
+
+### Contexto
+
+El bloque de test —18.664 pedidos, 2018-06 a 2018-08, prevalencia **10,19%**— no se tocó en
+ningún momento de S3. Todas las elecciones se hicieron sobre validación: qué features entran,
+qué preprocesado, cuántos árboles, y qué modelo se queda.
+
+### Decisión
+
+**Se lee una sola vez, y se lee para todos los modelos.**
+
+*Razón:* como las decisiones ya están congeladas, puntuar también al árbol y a los baselines no
+introduce sesgo de selección, y hace la tabla verificable — se puede comprobar si el orden se
+mantiene con otra tasa base. Publicar solo el ganador obligaría a creerse la elección en vez de
+poder auditarla.
+
+`make eval` es esa lectura, con el aviso impreso encima.
+
+### Resultado
+
+| Modelo | Momento | PR-AUC | recall@10% | lift@10% | Brier |
+|---|---|---|---|---|---|
+| **logistic** | **t₀** | **0,1802** | 0,2178 | 2,18 | 0,0961 |
+| lightgbm | t₀ | 0,1626 | 0,1999 | 2,00 | 0,0972 |
+| logistic binned | t₀ | 0,1391 | 0,1594 | 1,59 | 0,0988 |
+| single feature | t₀ | 0,1277 | 0,1420 | 1,42 | — |
+| constant | t₀ | 0,1019 | 0,0989 | 0,99 | 0,0935 |
+| **logistic** | **t₁** | **0,2281** | 0,2614 | 2,61 | 0,0932 |
+| lightgbm | t₁ | 0,2092 | 0,2462 | 2,46 | 0,0950 |
+| single feature | t₁ | 0,1624 | 0,1978 | 1,98 | — |
+| logistic binned | t₁ | 0,1522 | 0,1825 | 1,82 | 0,0980 |
+| constant | t₁ | 0,1019 | 0,0989 | 0,99 | 0,0935 |
+
+### Tres cosas que dice esta tabla
+
+**1 · La decisión de D-12 queda confirmada por el bloque que no participó en tomarla.**
+
+| | lightgbm − logistic |
+|---|---|
+| t₀ | **−0,0175** [−0,0271, −0,0100] |
+| t₁ | **−0,0189** [−0,0315, −0,0068] |
+
+En validación el árbol iba nominalmente por delante, sin significación. En test va por detrás
+**con significación**, en dirección contraria. Quedarse con la logística no fue conservadurismo:
+era la decisión correcta, y se tomó con una regla escrita antes de ver ninguno de estos números.
+
+Si la regla hubiera sido "gana el que tenga más PR-AUC en validación", el proyecto habría
+enviado a producción el modelo peor.
+
+**2 · La ventaja de esperar al despacho es mayor en test, no menor.**
+
+| | t₁ − t₀ |
+|---|---|
+| Validación | +0,0230 [+0,0132, +0,0316] |
+| **Test** | **+0,0480** [+0,0380, +0,0590] |
+
+Todo empeora de validación a test, como era de esperar con la tasa base cayendo del 11,86% al
+10,19%. Pero no empeora por igual. Normalizando por la prevalencia de cada bloque:
+
+| | Validación | Test |
+|---|---|---|
+| t₀ | 1,97 × la tasa base | **1,77 ×** |
+| t₁ | 2,17 × | **2,24 ×** |
+
+**t₀ se degrada y t₁ aguanta.** Tiene sentido: la señal de t₀ es indirecta —precio, geografía,
+historial— y depende del régimen; la de t₁ mide el comportamiento real de este envío concreto
+contra su propio plazo, y eso viaja mejor entre periodos. Refuerza el argumento de negocio a
+favor de t₁, con la contrapartida de siempre: la ventana de actuación es más corta.
+
+**3 · Los modelos están descalibrados, y hay prueba.**
+
+El Brier de la **regla constante es 0,0935**, mejor que el de la logística de t₀ (**0,0961**).
+Un modelo que ordena casi el doble de bien que el azar pierde en error cuadrático, porque está
+entrenado sobre una tasa base del 14,70% y puntúa un bloque del 10,19%: sobreestima el riesgo
+de forma sistemática.
+
+Es exactamente lo que D-08 anticipó al elegir los cortes, y convierte la regla 8 de `CLAUDE.md`
+en una necesidad demostrada y no en una buena intención. **Sin recalibrar, cualquier cifra en
+euros sería ficción.** Es la primera tarea de S4.
+
+### Consecuencias
+
+- El modelo de la fase 1 es la **regresión logística**, en sus dos versiones t₀ y t₁.
+- La cifra que se publica del proyecto es: a igualdad de coste, intervenir sobre el 10% de los
+  pedidos peor puntuados captura el **21,8% de las reseñas negativas en t₀ y el 26,1% en t₁**,
+  frente al 9,9% de actuar al azar.
+- `reports/figures/t0_vs_t1_test.png` es la figura de cabecera del README.
+- **El test no se vuelve a leer en S4** salvo para la traducción a euros del modelo ya
+  calibrado, y esa calibración se ajusta sobre validación.

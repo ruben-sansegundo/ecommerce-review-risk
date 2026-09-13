@@ -153,7 +153,9 @@ ecommerce-review-risk/
 │   ├── train.py
 │   └── evaluate.py        # métricas + umbral por coste esperado
 ├── tests/
-│   └── test_features.py
+│   ├── test_features.py   # espina, features y no fuga de historial
+│   ├── test_evaluate.py   # métricas, costes y bootstrap
+│   └── test_train.py      # qué columnas ve cada momento, no fuga en el modelo
 ├── models/                # artefactos entrenados; no se versionan en fase 1
 └── reports/figures/       # PNG que se incrustan en el README
 ```
@@ -181,7 +183,7 @@ una entrevista**.
 
 ## 7. Estado actual
 
-**Sesión 2 de 8 terminada — población, split temporal y features.** Al día 2026-09-11.
+**Sesión 3 de 8 terminada — modelos, comparación y lectura del test.** Al día 2026-09-13.
 
 `docs/decisiones.md` es el documento de traspaso entre sesiones: recoge las decisiones tomadas
 y su porqué. Léelo junto a este fichero y a `docs/features.md` antes de proponer nada.
@@ -194,48 +196,63 @@ y su porqué. Léelo junto a este fichero y a `docs/features.md` antes de propon
 - [x] `src/config.py` y `src/data.py`: descarga vía API de Kaggle con alternativa manual,
       `data/manifest.json` con hash por tabla, exploración del esquema
 - [x] `docs/problema.md` y matriz de costes cerrada
-- [x] Remoto de git y primeros commits
 
 **S2 — población, split y features** (D-07 a D-09)
 
-- [x] `build_spine()`: 96.636 pedidos, una fila cada uno, con target y los dos momentos
-- [x] Split temporal en tres bloques, elegido por régimen logístico y persistido en la espina
-- [x] 27 features (`T0_FEATURES` 22 + `T1_FEATURES` 5) en `src/features.py`
-- [x] 35 tests, incluida la prueba de no fuga que envenena la fecha de entrega real
-- [x] `notebooks/01_eda.ipynb` y `notebooks/02_signal.ipynb`, con figuras en el README
-- [x] `docs/features.md` completo: feature → momento, AUC univariante, nulos, origen
+- [x] `build_spine()`: 96.636 pedidos, con target y los dos momentos
+- [x] Split temporal en tres bloques, elegido por régimen logístico
+- [x] 27 features, 35 tests, `notebooks/01_eda.ipynb` y `02_signal.ipynb`
+
+**S3 — historial, baselines, modelo y test** (D-10 a D-13)
+
+- [x] Historial de vendedor con **doble reloj** y suavizado estimado por momentos:
+      5 features nuevas, `seller_neg_rate` la segunda más informativa del catálogo
+- [x] `src/evaluate.py`: PR-AUC, recall@k, lift@k, Brier, coste esperado con vector por fila,
+      umbral óptimo y **bootstrap emparejado** para poner intervalo a cada diferencia
+- [x] `src/train.py`: cuatro baselines y LightGBM, misma matriz y mismo código de medida
+- [x] Criterios de aceptación **fechados antes** de entrenar el árbol (D-12)
+- [x] Lectura única del test con todo congelado (D-13)
+- [x] 83 tests · `notebooks/03_baseline.ipynb` y `04_model.ipynb`
 
 ### Cifras vigentes
 
 | | |
 |---|---|
 | Población de análisis | 96.636 pedidos, 2017-01 a 2018-08 |
-| Prevalencia global | 13,42% |
 | Entrenamiento | 2017-01 .. 2018-03 · 64.360 · 14,70% |
 | Validación | 2018-04 .. 2018-05 · 13.612 · 11,86% |
 | **Test** | 2018-06 .. 2018-08 · 18.664 · **10,19%** |
-| Mejor AUC univariante | 0,590 (`freight_total`) |
+| **Modelo de la fase 1** | **Regresión logística**, en t₀ y t₁ |
+| PR-AUC en test | **0,1802** (t₀) · **0,2281** (t₁) |
+| recall@10% en test | 21,8% (t₀) · 26,1% (t₁), frente al 9,9% del azar |
+| t₁ − t₀ en test | **+0,0480** [+0,0380, +0,0590] |
 
-### Lo que S2 dejó claro y condiciona S3
+### Lo que S3 dejó claro y condiciona S4
 
-- **El retraso de entrega domina el target** (54,0% de prevalencia cuando el pedido llega tarde
-  frente a 9,2% cuando llega a tiempo), pero **no es el único canal**: `n_items` predice la
-  reseña sin predecir el retraso. No reduzcas el problema a un predictor de retraso.
-- **Ninguna variable es fuerte por sí sola.** Un predictor individual espectacular en este
-  dataset es sospecha de fuga antes que buena noticia.
-- **Las relaciones son no lineales y la señal vive en las colas.** Esto da contenido real a la
-  comparación de la regla 5: para que la regresión logística compita habrá que darle las
-  variables troceadas en tramos.
+- **La señal es aditiva.** Dos sondeos independientes lo confirman: trocear las variables
+  buscando curvatura empeoró (D-11), y un árbol libre de construir conjunciones no encuentra
+  interacciones que valgan 0,01 de PR-AUC y sobreajusta desde la ronda 25 (D-12). No vuelvas a
+  proponer modelos más complejos sin un argumento nuevo.
+- **Los modelos están descalibrados y hay prueba**: el Brier de la regla constante (0,0935) bate
+  al de la logística de t₀ (0,0961), porque entrenan sobre un 14,70% y puntúan un 10,19%.
+  **Es la primera tarea de S4 y sin ella no hay euros.**
+- **t₀ se degrada entre bloques y t₁ aguanta** (1,97 → 1,77 veces la tasa base frente a
+  2,17 → 2,24). La ventaja de esperar al despacho es mayor de lo que decía validación.
+- **Candidata a feature**, hallada por la logística: `seller_prior_orders` menos
+  `seller_prior_reviews`, es decir los pedidos despachados cuya reseña aún no ha llegado — un
+  vendedor en punta de volumen y todavía sin juzgar. Ahora el modelo la reconstruye restando.
 
-### Siguiente: S3
+### Siguiente: S4
 
-1. **Agregados de historial de vendedor con ventana hacia atrás.** Es la feature que falta y el
-   punto del proyecto donde es más fácil colar una fuga. Matiz que la regla 3 no cubre del
-   todo: no basta con usar pedidos *anteriores*, hay que usar **etiquetas ya conocidas** en ese
-   instante — la reseña llega una mediana de 10 días después de la compra. Por eso la espina
-   guarda `review_creation_date`.
-2. **Baseline**: regla trivial, luego regresión logística. Con su número explícito.
-3. **LightGBM**, que tiene que batir al baseline o no se justifica.
+1. **Calibración sobre validación.** Curva de calibración y Brier antes y después, en t₀ y t₁.
+   Sin esto, todo lo demás de la sesión es ficción (regla 8).
+2. **Umbral por coste esperado** (0,25, D-04) aplicado sobre las probabilidades calibradas, y
+   comparación con el umbral empíricamente óptimo: la distancia entre ambos mide lo que queda
+   de descalibración.
+3. **Traducción a euros** y `notebooks/05_business.ipynb`, con la asimetría t₀/t₁ del final de
+   D-04 (en t₀ hay más palancas, así que la eficacia real probablemente sea mayor).
+4. **Análisis de sensibilidad** de D-04: `C_neg` 15-80 €, `e` 0,15-0,50, `c_int` 1-8 €. La
+   salida que importa es **la frontera donde el proyecto deja de compensar**.
 
 ### Cómo trabaja Rubén
 
