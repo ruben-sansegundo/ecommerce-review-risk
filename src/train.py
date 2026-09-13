@@ -138,6 +138,13 @@ def logistic_pipeline(X: pd.DataFrame, binned: bool = False) -> Pipeline:
     )
 
 
+def fit_logistic(X: pd.DataFrame, y, binned: bool = False) -> Pipeline:
+    """Fit the logistic pipeline. Named so that callers who need the model
+    itself - the calibration of S4 needs one fit scoring two blocks - do not
+    have to rebuild it from its parts."""
+    return logistic_pipeline(X, binned=binned).fit(X, y)
+
+
 def baseline_scores(name: str, moment: str, frames: dict, block: str = "val") -> np.ndarray:
     """Fit `name` on training and score `block` with it."""
     X_train, y_train = frames["train"]
@@ -153,8 +160,7 @@ def baseline_scores(name: str, moment: str, frames: dict, block: str = "val") ->
         return X_eval[column].fillna(X_train[column].median()).to_numpy()
 
     if name in ("logistic", "logistic binned"):
-        pipeline = logistic_pipeline(X_train, binned=name.endswith("binned"))
-        pipeline.fit(X_train, y_train)
+        pipeline = fit_logistic(X_train, y_train, binned=name.endswith("binned"))
         return pipeline.predict_proba(X_eval)[:, 1]
 
     raise ValueError(f"unknown model {name!r}")
